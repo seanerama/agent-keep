@@ -185,6 +185,22 @@ echo "==> verify liveness (from the host itself, over ssh)"
 # Verify FROM THE HOST: BIND_HOST is a local interface on the target (loopback by
 # default), reachable from the host but generally NOT from the operator's machine.
 sleep 5
+# issue #13 Defect 2: the egress-proxy is launched fire-and-forget by the unit's
+# `ExecStartPre=docker run -d` (returns 0 on detach). If it then exits — e.g. the
+# empty-KEEP_EGRESS_PORT boot crash — the old verify step never noticed, because
+# it only curled worker + mechanic /healthz. Assert the proxy container is
+# actually RUNNING (State.Running == true) FIRST: a dead audited security boundary
+# must FAIL the deploy loudly, never read as "verified live". The liveness logic
+# lives in scripts/assert-proxy-running.sh (unit-tested with a stubbed docker);
+# pipe it over ssh so `docker inspect` sees the host daemon.
+PROXY_CONTAINER="agent-keep-${SLUG}-proxy"
+if ! ssh "$HOST" "bash -s -- ${PROXY_CONTAINER}" < scripts/assert-proxy-running.sh; then
+  echo "==> DEPLOY FAILED: egress-proxy ${PROXY_CONTAINER} is not running." >&2
+  echo "    The proxy is the audited egress boundary; a chassis with it down is NOT live." >&2
+  echo "    Inspect it on the host:  ssh ${HOST} docker logs ${PROXY_CONTAINER}" >&2
+  exit 1
+fi
+echo "    egress-proxy     : running (audited boundary up)"
 WORKER_HEALTH=$(ssh "$HOST" "curl -fsS --max-time 10 'http://${BIND_HOST}:${WORKER_BIND_PORT}/healthz'")
 echo "    worker  /healthz: ${WORKER_HEALTH}"
 MECHANIC_HEALTH=$(ssh "$HOST" "curl -fsS --max-time 10 'http://${BIND_HOST}:${MECHANIC_BIND_PORT}/healthz'")
