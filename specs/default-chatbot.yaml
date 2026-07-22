@@ -1,0 +1,62 @@
+# The default chatbot — the ONE spec Stage 2 bakes into the chassis image
+# (`ghcr.io/seanerama/agent-keep-default-chatbot`, slug extends the locked
+# identity per ADR 0001). The thin agent inside the thick chassis: dev-http
+# in, the loop against the model provider, every model call audited.
+#
+# Kill-switch note (recorded deliberately, per the stage acceptance): a
+# chassis has no feature flags to hide behind — the "off" state IS this spec
+# not being deployed, and dark-launch = the image published but no host
+# running it. No runtime flag exists or is wanted.
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Default Chatbot
+  slug: default-chatbot
+  description: The chassis default chatbot — dev-http in, audited model loop out.
+  specVersion: 0.1.0
+spec:
+  persona:
+    identity: >-
+      You are the Agent Keep default chatbot — the resident agent of the
+      chassis. Answer plainly and briefly; you exist to prove the chassis
+      end to end: message in, model call, audited reply out.
+    source: static # personality is fixed config; nothing rewrites it
+  channels:
+    - type: dev-http # ADR 0003: first channel is dev-http; platform
+      port: 8000 #     channels are post-skeleton stages
+  gateway:
+    queue: in-process # single container, serial loop — no broker
+  sessions:
+    mode: single
+  approval: {} # present but trivially empty — no tools are granted,
+  #              so nothing can require approval (absence, not policy)
+  sandbox:
+    profile: container
+    # Egress allowlist: exhaustive positive declaration — ONLY the model
+    # provider host; nothing else is reachable by construction. Declared NOW,
+    # while the CI provider is static and makes no network call, because this
+    # is the perimeter the live flip runs inside (Stage 3 proxies it, Stage 5
+    # goes live against it).
+    egress:
+      - api.anthropic.com:443
+  models:
+    # `static` is the CI substrate (ADR 0001: hermetic, deterministic, no
+    # secrets, no network). Going live is a reviewed spec edit — flip
+    # `provider` to `anthropic` (the one host allowlisted above) and rebuild;
+    # the model_router below already ships and does per-session token
+    # accounting for whichever provider the spec selects.
+    provider: static
+    static:
+      script:
+        - Hello from the Agent Keep default chatbot. The chassis is live.
+    tiers: [] # no task routing — one provider fits the whole job
+    budgets: # token accounting ON: selects the model-router component,
+      maxTokensPerSession: 200000 # which meters every call per session
+      onExceed: block
+  observability:
+    logLevel: info
+    audit:
+      sink: jsonl # append-only; every model call is recorded
+      path: /var/lib/agent-keep/audit.jsonl
+  persistence:
+    tier: sqlite # real file-backed sessions (SQLITE_PATH at run time)

@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "keep-spec",
     "agent-runtime",
+    "keep-build",
 ]
 
 [dependency-groups]
@@ -26,6 +27,7 @@ members = ["packages/*"]
 [tool.uv.sources]
 keep-spec = { workspace = true }
 agent-runtime = { workspace = true }
+keep-build = { workspace = true }
 
 [tool.ruff]
 target-version = "py312"
@@ -33,6 +35,7 @@ line-length = 100
 src = [
     "packages/keep_spec/src",
     "packages/agent_runtime/src",
+    "packages/keep_build/src",
 ]
 
 [tool.ruff.lint]
@@ -43,6 +46,7 @@ strict = true
 files = [
     "packages/keep_spec/src/keep_spec",
     "packages/agent_runtime/src/agent_runtime",
+    "packages/keep_build/src/keep_build",
 ]
 
 [tool.pytest.ini_options]

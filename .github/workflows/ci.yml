@@ -1,8 +1,11 @@
 name: CI
-# Agent Keep — Verity hygiene gate + stage-1 transplant gates.
-# secret-scan + structure (scaffold hygiene) plus lint, typecheck, and the
-# hermetic unit suite (the progressive gate — framework-spec §3). The container
-# integration job is Stage 2's work.
+# Agent Keep — Verity hygiene gate + stage-1 transplant gates + the stage-2
+# container gate. secret-scan + structure (scaffold hygiene) plus lint,
+# typecheck, the hermetic unit suite, and the real container integration test
+# (the progressive gate — framework-spec §3). On push to main, the
+# default-chatbot image is built and pushed to ghcr as the moving :edge tag +
+# the immutable :${GITHUB_SHA} tag. :latest is NOT moved here — it tracks
+# formal releases only; main is unreleased.
 on:
   pull_request:
   push:
@@ -73,3 +76,54 @@ jobs:
         run: uv sync --locked
       - name: Unit tests
         run: uv run pytest -m "not container"
+  container:
+    # THE integration test (stage 2): keep-build build -> docker run (hardened)
+    # -> healthz -> message round-trip via the static provider -> audit line
+    # with the run-correlation key -> non-root -> absence grep. Real container,
+    # no mocks inside it. Hermetic on PRs: static provider, no secrets, no
+    # network beyond image base pulls.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+      - name: Sync workspace (locked)
+        run: uv sync --locked
+      - name: Container integration test
+        run: uv run pytest -m container
+  publish-image:
+    # Push the default-chatbot image to ghcr on main only, after every gate is
+    # green. Publishes :edge (moving, latest-main) + :${GITHUB_SHA} (immutable).
+    # Never moves :latest — that is reserved for formal releases, so :latest
+    # always points at a tagged, reviewed release. Dark-launch by design: a
+    # published image nobody runs is the chassis "off" state (no kill-switch
+    # flag exists — the spec not being deployed IS off).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [structure, secret-scan, lint, typecheck, test, container]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+      - name: Sync workspace (locked)
+        run: uv sync --locked
+      - name: Log in to ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build image from the baked spec
+        run: uv run keep-build build specs/default-chatbot.yaml
+      - name: Tag and push (edge + immutable SHA; latest is release-only)
+        run: |
+          IMG=ghcr.io/seanerama/agent-keep-default-chatbot
+          # `keep-build build` produces the local :latest tag as its build
+          # output. Retag it to the moving :edge and the immutable
+          # :${GITHUB_SHA}, and push ONLY those. Do NOT push :latest from main
+          # — latest tracks formal releases, not unreleased main.
+          docker tag "$IMG:latest" "$IMG:edge"
+          docker tag "$IMG:latest" "$IMG:${GITHUB_SHA}"
+          docker push "$IMG:edge"
+          docker push "$IMG:${GITHUB_SHA}"
