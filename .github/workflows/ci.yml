@@ -142,6 +142,16 @@ jobs:
         run: |
           uv run keep-build build specs/default-chatbot.ollama.yaml \
             --tag ghcr.io/seanerama/agent-keep-default-chatbot:ollama-build
+      - name: Build the openai worker variant (issue #15, second adapter)
+        # The openai spec shares the `default-chatbot` slug too, so build it with
+        # an explicit tag to avoid clobbering the static :latest or the ollama
+        # variant. A third worker VARIANT of the same image repo, distinguished by
+        # an `openai-` tag prefix (deploy with `./deploy.sh default-chatbot
+        # openai-edge`, with OPENAI_API_KEY injected at run time). The key is NOT
+        # needed at image build — only at boot on the live host.
+        run: |
+          uv run keep-build build specs/default-chatbot.openai.yaml \
+            --tag ghcr.io/seanerama/agent-keep-default-chatbot:openai-build
       - name: Tag and push (edge + immutable SHA; latest is release-only)
         run: |
           # `keep-build build`/`build-proxy` produce local :latest tags as
@@ -164,3 +174,10 @@ jobs:
           docker tag "$OLLAMA_IMG:ollama-build" "$OLLAMA_IMG:ollama-${GITHUB_SHA}"
           docker push "$OLLAMA_IMG:ollama-edge"
           docker push "$OLLAMA_IMG:ollama-${GITHUB_SHA}"
+          # The openai worker variant: moving :openai-edge + immutable
+          # :openai-${GITHUB_SHA} on the SAME repo (never :latest).
+          OPENAI_IMG=ghcr.io/seanerama/agent-keep-default-chatbot
+          docker tag "$OPENAI_IMG:openai-build" "$OPENAI_IMG:openai-edge"
+          docker tag "$OPENAI_IMG:openai-build" "$OPENAI_IMG:openai-${GITHUB_SHA}"
+          docker push "$OPENAI_IMG:openai-edge"
+          docker push "$OPENAI_IMG:openai-${GITHUB_SHA}"
