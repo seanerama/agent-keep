@@ -72,6 +72,27 @@ fi
 SLUG="$1"
 VERSION="$2"
 
+# Provider-agnostic deploy-time secrets (stage 7). A live worker builds its
+# provider EAGERLY at boot and refuses to start without its secret
+# (anthropic_provider.py; runner.py). So any secret the chosen provider needs
+# must be in the env file BEFORE the worker starts — not appended after it has
+# already crashed. When KEEP_DEPLOY_SECRETS=1, read `VAR=value` lines from stdin
+# ONCE, up front (before any ssh consumes it), and inject them below (§ secrets)
+# right after write-env and before the worker is started. The values are
+# arbitrary: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, several, or NONE
+# (a local Ollama needs no secret — then just omit the flag). They travel on
+# stdin only, never argv/log, and land in the root:0600 host env file via the
+# scoped helper's append-env. NEVER echo DEPLOY_SECRETS.
+DEPLOY_SECRETS=""
+if [ "${KEEP_DEPLOY_SECRETS:-}" = "1" ]; then
+  DEPLOY_SECRETS="$(cat)"
+  if [ -z "$DEPLOY_SECRETS" ]; then
+    printf '%s\n' "KEEP_DEPLOY_SECRETS=1 but stdin was empty — pipe VAR=value line(s), e.g." >&2
+    printf '  %s\n' "printf 'ANTHROPIC_API_KEY=%s\\n' \"\$KEY\" | KEEP_DEPLOY_SECRETS=1 ./deploy.sh ${SLUG} ${VERSION}" >&2
+    exit 64
+  fi
+fi
+
 # Slug validation MIRRORS the root helper's (deploy/agent-keep-deploy): strict
 # [a-z0-9] with single interior hyphens. Reject early client-side (defence in
 # depth) so a bad slug never reaches the host.
@@ -159,13 +180,15 @@ echo "    proxy   -> ${PROXY_REF}"
 echo "    mechanic-> ${MECHANIC_REF}"
 
 echo "==> write digest-pinned env (helper backs up the previous)"
-# Digest-pinned DEPLOY vars only. The operator appends the ANTHROPIC_API_KEY
-# secret VALUE below this block on the host (root:0600) for the live variant.
+# Digest-pinned DEPLOY vars only. Provider secret VALUES (e.g. ANTHROPIC_API_KEY,
+# OPENAI_API_KEY, GOOGLE_API_KEY — or none for a local provider) are injected
+# below the § secrets step from KEEP_DEPLOY_SECRETS stdin, BEFORE the worker
+# starts, and land here on the host (root:0600) via the helper's append-env.
 # KEEP_EGRESS_HOST/PORT are written empty so the unit's `-e VAR` pass-through
 # hands the container nothing (runner defaults apply) unless the operator sets them.
 printf '%s\n' \
   "# written by deploy.sh — digest-pinned deploy vars, do not hand-edit" \
-  "# (append the ANTHROPIC_API_KEY secret VALUE below this block for the live variant)" \
+  "# (provider secret VALUES are appended below this block by deploy.sh's secrets step)" \
   "WORKER_IMAGE_REF=${WORKER_REF}" \
   "PROXY_IMAGE_REF=${PROXY_REF}" \
   "MECHANIC_IMAGE_REF=${MECHANIC_REF}" \
@@ -178,6 +201,15 @@ printf '%s\n' \
   "KEEP_EGRESS_HOST=" \
   "KEEP_EGRESS_PORT=" \
   | ssh "$HOST" "sudo -n $HELPER write-env ${SLUG}"
+
+# § secrets: inject provider secret VALUE(s) into the env file BEFORE the worker
+# starts (a key-requiring provider crashes at boot otherwise). Provider-agnostic:
+# whatever VAR=value lines the operator piped in. stdin-only to the helper — the
+# values never reach argv or any log; DEPLOY_SECRETS is never echoed.
+if [ -n "$DEPLOY_SECRETS" ]; then
+  echo "==> inject deploy-time provider secret(s) into the env file (root:0600, before start)"
+  printf '%s\n' "$DEPLOY_SECRETS" | ssh "$HOST" "sudo -n $HELPER append-env ${SLUG}"
+fi
 
 ssh "$HOST" "sudo -n $HELPER service ${SLUG} enable-now && sudo -n $HELPER service ${SLUG} restart"
 
