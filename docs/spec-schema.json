@@ -757,11 +757,24 @@
           "title": "Name",
           "type": "string"
         },
+        "ollama": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OllamaProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Ollama provider config; required iff provider is 'ollama'."
+        },
         "provider": {
           "description": "Provider for this tier (blueprint model/llmrouter).",
           "enum": [
             "static",
-            "anthropic"
+            "anthropic",
+            "ollama"
           ],
           "title": "Provider",
           "type": "string"
@@ -814,11 +827,24 @@
           "default": null,
           "description": "Per-session cost control (blueprint model/llmrouter); None = no budgets."
         },
+        "ollama": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OllamaProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Ollama provider config; required iff provider is 'ollama'."
+        },
         "provider": {
           "description": "Default provider when no tier routing applies (blueprint model/llmrouter).",
           "enum": [
             "static",
-            "anthropic"
+            "anthropic",
+            "ollama"
           ],
           "title": "Provider",
           "type": "string"
@@ -887,6 +913,56 @@
         "audit"
       ],
       "title": "Observability",
+      "type": "object"
+    },
+    "OllamaProviderConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for the `ollama` model provider (ADR 0006 \u2014 local\ninference reached THROUGH the audited egress proxy, no API key).\n\nThe worker's Ollama base host is `host.docker.internal:11434` by default:\nthe host's Ollama server, reached over the docker gateway via the egress\nproxy (the worker never routes there directly). No `apiKeyEnv` \u2014 Ollama\ntakes no key. `pricing` is usually omitted (local compute has no per-token\nUSD cost in the cloud-API sense); token COUNTS still record. v1 additive\namendment, stage 8 (issue #15 first cut).",
+      "properties": {
+        "baseHost": {
+          "default": "host.docker.internal:11434",
+          "description": "Ollama server host[:port] the worker reaches THROUGH the egress proxy (cross-validated against sandbox.egress). Same host[:port] grammar as sandbox.egress; default 'host.docker.internal:11434' (the host's Ollama over the docker gateway \u2014 ADR 0006).",
+          "title": "Basehost",
+          "type": "string"
+        },
+        "maxTokens": {
+          "anyOf": [
+            {
+              "maximum": 128000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max output tokens per model call (Ollama options.num_predict); None = the adapter default (Ollama's own num_predict default). Ceiling 128000 matches the anthropic config's convention.",
+          "title": "Maxtokens"
+        },
+        "model": {
+          "description": "Ollama model name, e.g. 'llama3.2:latest'.",
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pricing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Operator-declared token pricing for this model path; required on every selectable path iff budgets.maxUsdPerSession is set (cross-validated). Usually omitted for ollama (local compute). None = no pricing declared."
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OllamaProviderConfig",
       "type": "object"
     },
     "Persistence": {

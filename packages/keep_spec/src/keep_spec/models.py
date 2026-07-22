@@ -950,14 +950,73 @@ class AnthropicProviderConfig(StrictModel):
     )
 
 
+class OllamaProviderConfig(StrictModel):
+    """Configuration for the `ollama` model provider (ADR 0006 — local
+    inference reached THROUGH the audited egress proxy, no API key).
+
+    The worker's Ollama base host is `host.docker.internal:11434` by default:
+    the host's Ollama server, reached over the docker gateway via the egress
+    proxy (the worker never routes there directly). No `apiKeyEnv` — Ollama
+    takes no key. `pricing` is usually omitted (local compute has no per-token
+    USD cost in the cloud-API sense); token COUNTS still record. v1 additive
+    amendment, stage 8 (issue #15 first cut).
+    """
+
+    model: str = Field(min_length=1, description="Ollama model name, e.g. 'llama3.2:latest'.")
+    baseHost: str = Field(
+        default="host.docker.internal:11434",
+        description=(
+            "Ollama server host[:port] the worker reaches THROUGH the egress proxy "
+            "(cross-validated against sandbox.egress). Same host[:port] grammar as "
+            "sandbox.egress; default 'host.docker.internal:11434' (the host's Ollama over "
+            "the docker gateway — ADR 0006)."
+        ),
+    )
+    maxTokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=128_000,
+        description=(
+            "Max output tokens per model call (Ollama options.num_predict); None = the "
+            "adapter default (Ollama's own num_predict default). Ceiling 128000 matches the "
+            "anthropic config's convention."
+        ),
+    )
+    pricing: Pricing | None = Field(
+        default=None,
+        description=(
+            "Operator-declared token pricing for this model path; required on every "
+            "selectable path iff budgets.maxUsdPerSession is set (cross-validated). Usually "
+            "omitted for ollama (local compute). None = no pricing declared."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _base_host_wellformed(self) -> Self:
+        if not re.match(EGRESS_HOST, self.baseHost):
+            raise ValueError(
+                f"models.ollama.baseHost {self.baseHost!r} is not a host[:port] "
+                "(optionally '*.' wildcard-subdomain) entry"
+            )
+        _, colon, port = self.baseHost.rpartition(":")
+        if colon and not 1 <= int(port) <= 65535:
+            raise ValueError(
+                f"models.ollama.baseHost {self.baseHost!r} has port {port} outside 1-65535"
+            )
+        return self
+
+
 def _check_provider_config(
     where: str,
     provider: str,
     static: StaticProviderConfig | None,
     anthropic: AnthropicProviderConfig | None,
+    ollama: OllamaProviderConfig | None,
 ) -> None:
     configured = {
-        name for name, cfg in (("static", static), ("anthropic", anthropic)) if cfg is not None
+        name
+        for name, cfg in (("static", static), ("anthropic", anthropic), ("ollama", ollama))
+        if cfg is not None
     }
     if provider not in configured:
         raise ValueError(f"{where}: provider '{provider}' requires a '{provider}' config block")
@@ -975,7 +1034,7 @@ class ModelTier(StrictModel):
     """
 
     name: str = Field(pattern=KEBAB, description="Tier name, e.g. 'triage' or 'reasoning'.")
-    provider: Literal["static", "anthropic"] = Field(
+    provider: Literal["static", "anthropic", "ollama"] = Field(
         description="Provider for this tier (blueprint model/llmrouter)."
     )
     static: StaticProviderConfig | None = Field(
@@ -985,11 +1044,19 @@ class ModelTier(StrictModel):
         default=None,
         description="Anthropic provider config; required iff provider is 'anthropic'.",
     )
+    ollama: OllamaProviderConfig | None = Field(
+        default=None,
+        description="Ollama provider config; required iff provider is 'ollama'.",
+    )
 
     @model_validator(mode="after")
     def _config_matches_provider(self) -> Self:
         _check_provider_config(
-            f"models.tiers['{self.name}']", self.provider, self.static, self.anthropic
+            f"models.tiers['{self.name}']",
+            self.provider,
+            self.static,
+            self.anthropic,
+            self.ollama,
         )
         return self
 
@@ -1022,7 +1089,7 @@ class Models(StrictModel):
     `model/llmrouter`). 'static' is a first-class provider (ADR 0004).
     """
 
-    provider: Literal["static", "anthropic"] = Field(
+    provider: Literal["static", "anthropic", "ollama"] = Field(
         description="Default provider when no tier routing applies (blueprint model/llmrouter)."
     )
     static: StaticProviderConfig | None = Field(
@@ -1031,6 +1098,10 @@ class Models(StrictModel):
     anthropic: AnthropicProviderConfig | None = Field(
         default=None,
         description="Anthropic provider config; required iff provider is 'anthropic'.",
+    )
+    ollama: OllamaProviderConfig | None = Field(
+        default=None,
+        description="Ollama provider config; required iff provider is 'ollama'.",
     )
     tiers: list[ModelTier] = Field(
         default_factory=list,
@@ -1046,7 +1117,7 @@ class Models(StrictModel):
 
     @model_validator(mode="after")
     def _config_matches_provider(self) -> Self:
-        _check_provider_config("models", self.provider, self.static, self.anthropic)
+        _check_provider_config("models", self.provider, self.static, self.anthropic, self.ollama)
         names = [tier.name for tier in self.tiers]
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
@@ -1069,15 +1140,22 @@ class Models(StrictModel):
             return self
         unpriced: list[str] = []
 
-        def check(where: str, provider: str, anthropic: AnthropicProviderConfig | None) -> None:
+        def check(
+            where: str,
+            provider: str,
+            anthropic: AnthropicProviderConfig | None,
+            ollama: OllamaProviderConfig | None,
+        ) -> None:
             if provider == "static":
                 unpriced.append(f"{where} (provider 'static' has no declarable price)")
-            elif anthropic is None or anthropic.pricing is None:
+            elif provider == "anthropic" and (anthropic is None or anthropic.pricing is None):
+                unpriced.append(f"{where}.pricing")
+            elif provider == "ollama" and (ollama is None or ollama.pricing is None):
                 unpriced.append(f"{where}.pricing")
 
-        check("models", self.provider, self.anthropic)
+        check("models", self.provider, self.anthropic, self.ollama)
         for tier in self.tiers:
-            check(f"models.tiers['{tier.name}']", tier.provider, tier.anthropic)
+            check(f"models.tiers['{tier.name}']", tier.provider, tier.anthropic, tier.ollama)
         if unpriced:
             raise ValueError(
                 "models.budgets.maxUsdPerSession is set but these selectable model paths "
