@@ -41,12 +41,13 @@ Step B just swaps the worker image for one that actually calls the model.
 
 ## 1. Preflight (once per host, and after any change to the helper/unit)
 
-Values come from `.verity/deploy-access.md` (gitignored, shared out-of-band).
-For the NSAF dev server, `DEPLOY_HOST=smahoney@100.110.222.42`, reachable only on
+Values come from `.verity/deploy-access.md` (gitignored, shared out-of-band —
+ADR 0004 keeps access locations out of git). For the NSAF dev server the ssh
+target and its tailnet address live in that file; the host is reachable only on
 the tailnet.
 
 ```sh
-export DEPLOY_HOST=smahoney@100.110.222.42      # from .verity/deploy-access.md
+export DEPLOY_HOST=<ssh-target>      # from .verity/deploy-access.md
 
 # You must be on the tailnet:
 ssh "$DEPLOY_HOST" 'docker info >/dev/null && echo docker-ok'
@@ -74,7 +75,7 @@ ssh "$DEPLOY_HOST" 'echo "$GHCR_PAT" | docker login ghcr.io -u seanerama --passw
 ## 3. Step A — deploy the static image (prove the pipe + DENY)
 
 ```sh
-DEPLOY_HOST=smahoney@100.110.222.42 ./deploy.sh default-chatbot edge
+DEPLOY_HOST=<ssh-target> ./deploy.sh default-chatbot edge
 ```
 
 `deploy.sh` ships the unit, the read-only spec and the ingress relay, (re)creates
@@ -126,7 +127,7 @@ docker push ghcr.io/seanerama/agent-keep-default-chatbot:live
 ### 4b. Deploy the live tag
 
 ```sh
-DEPLOY_HOST=smahoney@100.110.222.42 \
+DEPLOY_HOST=<ssh-target> \
   KEEP_SPEC_FILE=specs/default-chatbot.live.yaml \
   ./deploy.sh default-chatbot live
 ```
@@ -197,7 +198,7 @@ file (`<slug>.env.bak.<timestamp>`).
 
 ```sh
 # e.g. roll Step B (:live) back to the static :edge you ran in Step A:
-DEPLOY_HOST=smahoney@100.110.222.42 ./deploy.sh default-chatbot edge
+DEPLOY_HOST=<ssh-target> ./deploy.sh default-chatbot edge
 # re-run smoke-chat to confirm the previous image serves again.
 ```
 

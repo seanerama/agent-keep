@@ -11,7 +11,7 @@
 #
 # Usage:
 #   DEPLOY_HOST=user@host ./deploy.sh <slug> <worker-version-tag>
-#     e.g. DEPLOY_HOST=smahoney@100.110.222.42 ./deploy.sh default-chatbot edge
+#     e.g. DEPLOY_HOST=<ssh-target> ./deploy.sh default-chatbot edge
 #
 # DEPLOY_HOST may be a `user@host` pair or a ~/.ssh/config alias.
 #
@@ -66,7 +66,7 @@ set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
   echo "usage: DEPLOY_HOST=user@host ./deploy.sh <slug> <worker-version-tag>" >&2
-  echo "  e.g. DEPLOY_HOST=smahoney@100.110.222.42 ./deploy.sh default-chatbot edge" >&2
+  echo "  e.g. DEPLOY_HOST=<ssh-target> ./deploy.sh default-chatbot edge" >&2
   exit 64
 fi
 SLUG="$1"
@@ -85,7 +85,7 @@ fi
 # script. Real per-host values live in .verity/deploy-access.md (gitignored).
 # FAIL CLOSED with a clear message when unset (it only exists on the operator's
 # machine — CI never sets it, and must not).
-HOST="${DEPLOY_HOST:?set DEPLOY_HOST (ssh target, e.g. smahoney@100.110.222.42 or a ~/.ssh alias) — see .verity/deploy-access.md}"
+HOST="${DEPLOY_HOST:?set DEPLOY_HOST (ssh target, e.g. an ssh alias or user@host) — see .verity/deploy-access.md}"
 OWNER="${AGENT_KEEP_OWNER:-seanerama}"   # ghcr namespace; override for a fork
 
 WORKER_IMG="ghcr.io/${OWNER}/agent-keep-${SLUG}"
