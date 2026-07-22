@@ -1,0 +1,76 @@
+# Fixture worker bundle spec (stage 33) — a valid keep/v1 worker the
+# read-only analyzer reads. Derived from examples/outage-correlation.yaml,
+# trimmed to exactly what the headless analyzer test needs: a granted+auto-
+# approved tool (paging.page_room) whose name is an audit action.name (the
+# identity-join case) and a non-tool field (sessions.history.topK) that
+# legitimately joins to NO audit records. Only validated (load_spec), never
+# built — so http/stdio servers and constraints are fine here.
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Fixture Worker
+  slug: fixture-worker
+  description: Fixture worker bundle exercising the read-only worker analyzer.
+  specVersion: 0.2.0
+spec:
+  persona:
+    identity: >-
+      You are the fixture NOC worker: you correlate alarms and page the NOC room
+      when impact is probable. You have no way to change device state.
+    tone: terse, factual
+    source: static
+  channels:
+    - type: webex
+      transport: webhook
+      verification:
+        method: signature
+        secretEnv: WEBEX_WEBHOOK_SECRET
+  gateway:
+    queue: redis
+    concurrency: serial
+    identityUnification: separate
+    allowlist:
+      policy: tiered
+      roster:
+        - id: webex:owner@example.com
+          tier: owner
+        - id: webex:kofi.noc@example.com
+          tier: trusted
+  sessions:
+    mode: single
+    definition: per-channel
+    history:
+      strategy: retrieval # a non-tool field the analyzer explains — no audit join
+      topK: 5
+  skills: []
+  tools:
+    - name: paging # the one write: page a single named room
+      transport:
+        kind: stdio
+        command: mcp-webex-page
+      allow:
+        - name: page_room
+          scope: read-write
+          constraints:
+            room: noc-outages
+      secretEnvs: [WEBEX_BOT_TOKEN]
+  approval:
+    policy: allowlist-confirm-rest
+    autoApprove:
+      - paging.page_room # value == audit action.name — the identity join
+  sandbox:
+    profile: container
+    egress:
+      - webexapis.com:443
+      - api.anthropic.com:443
+  models:
+    provider: anthropic
+    anthropic:
+      model: claude-haiku-4-5
+  observability:
+    logLevel: info
+    audit:
+      sink: jsonl
+      path: /var/lib/agent-keep/audit.jsonl
+  persistence:
+    tier: postgres
