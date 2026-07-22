@@ -1,0 +1,12 @@
+# Agent Keep — scoped deploy privilege (install at /etc/sudoers.d/agent-keep, mode 0440).
+# Allows ONLY the fixed root deploy helper; validated with `visudo -c` at install.
+# Re-namespaced from the Foundry's sudoers-agent-foundry (ADR 0001 transplant).
+#
+# This permits the ONE binary with no argument restriction, so the helper ITSELF
+# is the trust boundary. The helper validates every <slug> against a strict
+# [a-z0-9-] pattern before it reaches a path or unit name (see
+# deploy/agent-keep-deploy), so its subcommands taking a <slug> do NOT widen this
+# privilege. Replace <deploy-user> with the login that runs deploy.sh on this
+# host (per .verity/deploy-access.md, the NSAF dev server login is `smahoney`),
+# then install as /etc/sudoers.d/agent-keep (mode 0440) and check with `visudo -c`.
+<deploy-user> ALL=(root) NOPASSWD: /usr/local/sbin/agent-keep-deploy

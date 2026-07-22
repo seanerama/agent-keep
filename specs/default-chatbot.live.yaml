@@ -1,0 +1,69 @@
+# The default chatbot — LIVE variant (provider: anthropic). This is the ONE
+# reviewed spec edit that takes the chassis live, exactly the flip
+# specs/default-chatbot.yaml documents: `static` is the CI substrate (hermetic,
+# deterministic, no secrets, no network); flipping `provider` to `anthropic`
+# makes a REAL Messages API call to the ONE allowlisted host, api.anthropic.com,
+# THROUGH the paired egress proxy (Stage-5 acceptance).
+#
+# WHY A SEPARATE FILE (not an edit to default-chatbot.yaml): the published image
+# ghcr.io/seanerama/agent-keep-default-chatbot is baked STATIC-ONLY (CI builds
+# from default-chatbot.yaml). The static image never calls out, so it can prove
+# the pipe + the egress DENY path but NOT the ALLOW path to Anthropic. To get a
+# real model reply the Operator BUILDS this variant and deploys it — see
+# docs/deploy/first-live-chassis.md. Everything below is identical to
+# default-chatbot.yaml EXCEPT the models block; the slug is unchanged so it
+# deploys to the same chassis (agent-keep@default-chatbot), and the egress
+# allowlist is byte-identical so the proxy's boundary is unchanged.
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Default Chatbot
+  slug: default-chatbot
+  description: The chassis default chatbot — dev-http in, audited model loop out.
+  specVersion: 0.1.0
+spec:
+  persona:
+    identity: >-
+      You are the Agent Keep default chatbot — the resident agent of the
+      chassis. Answer plainly and briefly; you exist to prove the chassis
+      end to end: message in, model call, audited reply out.
+    source: static # personality is fixed config; nothing rewrites it
+  channels:
+    - type: dev-http # ADR 0003: first channel is dev-http; platform
+      port: 8000 #     channels are post-skeleton stages
+  gateway:
+    queue: in-process # single container, serial loop — no broker
+  sessions:
+    mode: single
+  approval: {} # present but trivially empty — no tools are granted,
+  #              so nothing can require approval (absence, not policy)
+  sandbox:
+    profile: container
+    # Egress allowlist: byte-identical to the static spec — ONLY the model
+    # provider host. This is the exhaustive positive declaration the paired
+    # proxy enforces at runtime; the live call to api.anthropic.com:443 is the
+    # ALLOW path Stage 5 proves, and everything else stays denied + audited.
+    egress:
+      - api.anthropic.com:443
+  models:
+    # THE flip: provider anthropic. The one allowlisted host above is the only
+    # host this reaches; the key arrives ONLY as the env var named below
+    # (ANTHROPIC_API_KEY), appended to the host env file at deploy (root:0600) —
+    # never in git, never in the image (contract agent-spec rule 3). The
+    # model_router still ships and meters every call per session (token budget
+    # below), so audit token accounting is unchanged from the static image.
+    provider: anthropic
+    anthropic:
+      model: claude-sonnet-4-5 # the resident chatbot's model; change as desired
+      apiKeyEnv: ANTHROPIC_API_KEY # schema default; the NAME only, never a value
+    tiers: [] # no task routing — one provider fits the whole job
+    budgets: # token accounting ON: selects the model-router component,
+      maxTokensPerSession: 200000 # which meters every call per session
+      onExceed: block
+  observability:
+    logLevel: info
+    audit:
+      sink: jsonl # append-only; every model call is recorded
+      path: /var/lib/agent-keep/audit.jsonl
+  persistence:
+    tier: sqlite # real file-backed sessions (SQLITE_PATH at run time)

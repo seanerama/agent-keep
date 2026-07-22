@@ -16,12 +16,25 @@ Scaffolded by Verity. Nothing deployed yet.
 ## Images
 
 - prefix: `ghcr.io/seanerama/agent-keep`
-- (no releases yet)
+- CI publishes `-default-chatbot`, `-mechanic`, `-egress-proxy` at `:edge` +
+  `:<sha>` on push to main (static/generic; no formal release/`:latest` yet).
+- The live worker (`-default-chatbot:live`, `provider: anthropic`) is built +
+  pushed by the Operator at go-live — see the runbook.
 
 ## Secrets
 
-- (none configured) — when set, list NAMES + on-disk LOCATIONS only, never values.
+- (none configured on any host yet) — when set, list NAMES + on-disk LOCATIONS
+  only, never values.
+- At go-live the ONE secret is `ANTHROPIC_API_KEY`, VALUE only in
+  `/etc/agent-keep/default-chatbot.env` (root:0600) on the deploy host.
 
 ## Coordination notes
 
-- (none)
+- **Deploy machinery is READY but not yet run live** (Stage 5). `deploy.sh` +
+  `deploy/` (systemd unit `agent-keep@.service`, scoped helper, ingress relay,
+  env templates) are in place and CI-green (shellcheck + unit-render +
+  local full-topology container test). The live smoke over the tailnet is the
+  Operator's gate — exact commands in **`docs/deploy/first-live-chassis.md`**.
+- Go-live is two steps: (A) the published static image proves the pipe + the
+  egress DENY path; (B) the Operator builds/pushes the `anthropic` worker variant
+  (`specs/default-chatbot.live.yaml`) for the real Anthropic reply + egress ALLOW.

@@ -55,6 +55,11 @@ jobs:
         run: uv run ruff check .
       - name: Ruff format check
         run: uv run ruff format --check .
+      - name: ShellCheck deploy + smoke scripts
+        # Stage-5 CI-side gate #1: the deploy machinery is shell, so lint it.
+        # deploy.sh + the scoped root helper + the Stages 2-4 smoke scripts the
+        # verify step runs. shellcheck is preinstalled on ubuntu-latest runners.
+        run: shellcheck deploy.sh deploy/agent-keep-deploy scripts/*.sh
   typecheck:
     runs-on: ubuntu-latest
     steps:
