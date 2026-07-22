@@ -27,7 +27,8 @@ jobs:
                    packages/agent_runtime/pyproject.toml \
                    packages/keep_spec/pyproject.toml \
                    contracts/agent-spec.md contracts/internal-message.md \
-                   contracts/audit-record.md contracts/run-lifecycle.md; do
+                   contracts/audit-record.md contracts/run-lifecycle.md \
+                   contracts/egress-observation.md; do
             test -f "$f" || { echo "missing required file: $f"; exit 1; }
           done
           echo "structure ok"
@@ -82,6 +83,12 @@ jobs:
     # with the run-correlation key -> non-root -> absence grep. Real container,
     # no mocks inside it. Hermetic on PRs: static provider, no secrets, no
     # network beyond image base pulls.
+    # Stage 3 rides the same job: tests/integration/test_egress_proxy.py
+    # builds the egress-proxy image (keep-build build-proxy, in-fixture),
+    # composes agent + proxy + stub on an --internal docker network, and
+    # proves the DENY path (refusal + denied `egress` audit record), the
+    # hermetic ALLOW path (in-network stub, byte counts), and the
+    # no-direct-route boundary — all hermetic on the runner.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -116,14 +123,19 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Build image from the baked spec
         run: uv run keep-build build specs/default-chatbot.yaml
+      - name: Build egress-proxy image
+        run: uv run keep-build build-proxy
       - name: Tag and push (edge + immutable SHA; latest is release-only)
         run: |
-          IMG=ghcr.io/seanerama/agent-keep-default-chatbot
-          # `keep-build build` produces the local :latest tag as its build
-          # output. Retag it to the moving :edge and the immutable
-          # :${GITHUB_SHA}, and push ONLY those. Do NOT push :latest from main
-          # — latest tracks formal releases, not unreleased main.
-          docker tag "$IMG:latest" "$IMG:edge"
-          docker tag "$IMG:latest" "$IMG:${GITHUB_SHA}"
-          docker push "$IMG:edge"
-          docker push "$IMG:${GITHUB_SHA}"
+          # `keep-build build`/`build-proxy` produce local :latest tags as
+          # their build output. Retag each to the moving :edge and the
+          # immutable :${GITHUB_SHA}, and push ONLY those. Do NOT push
+          # :latest from main — latest tracks formal releases, not
+          # unreleased main.
+          for IMG in ghcr.io/seanerama/agent-keep-default-chatbot \
+                     ghcr.io/seanerama/agent-keep-egress-proxy; do
+            docker tag "$IMG:latest" "$IMG:edge"
+            docker tag "$IMG:latest" "$IMG:${GITHUB_SHA}"
+            docker push "$IMG:edge"
+            docker push "$IMG:${GITHUB_SHA}"
+          done
