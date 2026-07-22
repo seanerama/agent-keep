@@ -325,3 +325,19 @@ def test_mechanic_template_validates_registers_and_builds() -> None:
     granted = {grant.name for server in spec.spec.tools for grant in server.allow}
     assert granted == {"read_bundle", "explain_behavior", "propose_fix"}
     assert granted <= set(local_tools.REGISTRY)
+
+
+def test_baked_mechanic_spec_registers_and_builds() -> None:
+    """`specs/mechanic.yaml` — THE spec the mechanic image bakes (stage 4) —
+    is buildable by this component library and its single read-only analyzer
+    tool server's grants resolve in the registry. Schema-level properties are
+    pinned in keep_spec's test_mechanic_spec.py; this is the wiring gate."""
+    spec = load_spec(REPO_ROOT / "specs" / "mechanic.yaml")
+    assert spec.metadata.slug == "mechanic"
+    ensure_buildable(spec)  # raises if any selection is unbuildable
+    (server,) = spec.spec.tools  # the SINGLE local-tool server: the analyzer
+    assert server.transport.kind == "local"
+    granted = {grant.name for grant in server.allow}
+    assert granted == {"read_bundle", "explain_behavior", "propose_fix"}
+    assert all(grant.scope == "read-only" for grant in server.allow)
+    assert granted <= set(local_tools.REGISTRY)
