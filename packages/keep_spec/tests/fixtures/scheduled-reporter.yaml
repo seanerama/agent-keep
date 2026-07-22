@@ -1,0 +1,64 @@
+# Second representative fixture: a scheduled reporter using the option
+# families full-featured.yaml does not (owner-only allowlist, manual-link,
+# per-user sessions, sliding-window history, vectors + sqlite-vec memory,
+# 'everything' approval, restricted-user sandbox, files persistence).
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Scheduled Reporter
+  slug: scheduled-reporter
+  description: Morning-report agent activated by messages and a cron schedule.
+  specVersion: 0.1.0
+spec:
+  persona:
+    identity: You are the household morning-report agent.
+    source: static
+  triggers:
+    activations:
+      - kind: message
+      - kind: schedule
+        cron: "30 6 * * *"
+        prompt: Compile the morning report and send it to the owner.
+  channels:
+    - type: dev-http
+      port: 8100
+  gateway:
+    queue: in-process
+    concurrency: serial
+    identityUnification: manual-link
+    allowlist:
+      policy: owner-only
+      roster:
+        - id: dev-http:owner
+          tier: owner
+  sessions:
+    mode: single
+    definition: per-user
+    history:
+      strategy: sliding-window
+      maxTurns: 40
+  memory:
+    structure:
+      kind: vectors
+      store: sqlite-vec
+    writePolicy: user-command
+  skills:
+    - name: morning-report
+      selection: always
+  tools: []
+  approval:
+    policy: everything
+  sandbox:
+    profile: restricted-user
+    egress: []
+  models:
+    provider: static
+    static:
+      script:
+        - Good morning. Here is your report.
+  observability:
+    audit:
+      sink: jsonl
+      path: /var/lib/agent-keep/audit.jsonl
+  persistence:
+    tier: files

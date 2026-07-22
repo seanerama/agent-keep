@@ -1,8 +1,8 @@
 name: CI
-# Agent Keep — Verity hygiene gate (stack-agnostic).
-# Honestly green on a fresh scaffold: secret-scan + a structure check, no faked
-# pass. Lint and test gates are added when the Architect chooses the stack and the
-# walking skeleton lands (the progressive gate — framework-spec §3).
+# Agent Keep — Verity hygiene gate + stage-1 transplant gates.
+# secret-scan + structure (scaffold hygiene) plus lint, typecheck, and the
+# hermetic unit suite (the progressive gate — framework-spec §3). The container
+# integration job is Stage 2's work.
 on:
   pull_request:
   push:
@@ -17,20 +17,59 @@ jobs:
   structure:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Required files present
         run: |
-          for f in README.md LICENSE; do
+          for f in README.md LICENSE pyproject.toml uv.lock .python-version \
+                   packages/agent_runtime/pyproject.toml \
+                   packages/keep_spec/pyproject.toml \
+                   contracts/agent-spec.md contracts/internal-message.md \
+                   contracts/audit-record.md contracts/run-lifecycle.md; do
             test -f "$f" || { echo "missing required file: $f"; exit 1; }
           done
           echo "structure ok"
   secret-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+      - name: Sync workspace (locked)
+        run: uv sync --locked
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+      - name: Sync workspace (locked)
+        run: uv sync --locked
+      - name: mypy (workspace)
+        run: uv run mypy
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+      - name: Sync workspace (locked)
+        run: uv sync --locked
+      - name: Unit tests
+        run: uv run pytest -m "not container"

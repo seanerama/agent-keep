@@ -1,0 +1,110 @@
+# Reference agent 2 — the contrast agent from VISION.md: "an outage-correlation
+# agent [is] a fundamentally different animal from a client-tracking agent,
+# even on identical infrastructure." Same envelope, same section shape as
+# examples/outage-correlation.yaml — different answers inside spec.*: Slack
+# instead of WebEx, owner-only instead of a NOC roster, structured facts
+# instead of vectors, owner-confirmed writes instead of pre-approved paging.
+# The diff between the two files IS the structural-personalization demo.
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Client Tracking
+  slug: client-tracking
+  description: Tracks client accounts and open commitments for its owner over Slack.
+  specVersion: 0.1.0
+spec:
+  persona:
+    identity: >-
+      You are a client-tracking assistant. You keep your owner's picture of
+      every client account current — recent activity, open commitments, and
+      the follow-ups they owe.
+    tone: warm, organized, brief
+    instructions:
+      - Track commitments with owners and due dates; surface whatever is slipping.
+      - Client data stays here; never restate it outside the owner's channel.
+    source: static # personality is fixed config; memory never rewrites it
+  triggers:
+    activations:
+      - kind: message # the owner asks; the agent answers
+      - kind: schedule # plus one weekly digest, Monday 08:00
+        cron: "0 8 * * 1"
+        prompt: >-
+          Compile the weekly client digest — recent activity, open
+          commitments, and the follow-ups owed per account.
+  channels:
+    - type: slack # different channel, same adapter posture:
+      transport: webhook # webhook mode,
+      verification:
+        method: signature # signature verification ON
+        secretEnv: SLACK_SIGNING_SECRET
+  gateway:
+    queue: redis # identical infrastructure to the outage agent
+    concurrency: serial
+    identityUnification: separate # single channel; nothing to unify
+    allowlist: # owner-only: a roster of exactly one
+      policy: owner-only
+      roster:
+        - id: slack:U024E0WNER
+          tier: owner
+  sessions:
+    mode: single
+    definition: per-user # the owner's thread follows the owner
+    history:
+      strategy: sliding-window # recent conversation verbatim; the durable
+      # record lives in facts memory, not the transcript
+      maxTurns: 40
+  memory:
+    structure:
+      kind: facts # human-auditable structured facts — no vector store built
+      store: none
+    writePolicy: user-command # only an explicit owner command writes memory
+  skills: [] # no instruction packs; nothing rides into the prompt unlisted
+  tools:
+    - name: crm # one MCP server; reads free, the single write gated below
+      transport:
+        kind: http
+        url: https://crm.internal:8443/mcp
+      allow:
+        - name: get_account
+          scope: read-only
+        - name: search_accounts
+          scope: read-only
+        - name: update_account_note # the only write in the image
+          scope: read-write
+      secretEnvs: [CRM_MCP_TOKEN]
+  approval:
+    # Stricter posture than the outage agent: only reads are pre-approved.
+    # The single write (crm.update_account_note) asks the owner every time —
+    # nothing here is too urgent to confirm.
+    policy: allowlist-confirm-rest
+    autoApprove:
+      - crm.get_account
+      - crm.search_accounts
+  sandbox:
+    profile: container
+    # Egress is empty by default; every entry below is a host this agent
+    # genuinely needs. Nothing else is reachable, by construction.
+    egress:
+      - slack.com:443 # Slack Web API for replies
+      - api.anthropic.com:443 # model provider
+      - crm.internal:8443 # CRM MCP server
+      - redis.internal:6379 # the gateway queue
+      - postgres.internal:5432 # persistence tier
+  models:
+    provider: anthropic
+    anthropic:
+      model: claude-sonnet-4-5
+      pricing: # operator-declared rates the USD budget enforces against
+        usdPerMillionInputTokens: 3.0
+        usdPerMillionOutputTokens: 15.0
+    tiers: [] # no routing — one mid-tier model fits the whole job
+    budgets:
+      maxUsdPerSession: 1.0
+      onExceed: block # nothing here is urgent enough to overspend
+  observability:
+    logLevel: info
+    audit:
+      sink: jsonl # append-only; every tool call is recorded
+      path: /var/lib/agent-keep/audit.jsonl
+  persistence:
+    tier: postgres # identical infrastructure to the outage agent

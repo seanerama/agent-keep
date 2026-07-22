@@ -1,0 +1,53 @@
+[project]
+name = "agent-keep"
+version = "0.1.0"
+description = "Agent Keep — chassis-first agent home (uv workspace root)"
+requires-python = ">=3.12"
+dependencies = [
+    "keep-spec",
+    "agent-runtime",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-pyyaml>=6",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+keep-spec = { workspace = true }
+agent-runtime = { workspace = true }
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = [
+    "packages/keep_spec/src",
+    "packages/agent_runtime/src",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.mypy]
+strict = true
+files = [
+    "packages/keep_spec/src/keep_spec",
+    "packages/agent_runtime/src/agent_runtime",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["packages", "tests"]
+asyncio_mode = "auto"
+markers = [
+    "container: integration tests that require a working docker daemon",
+]

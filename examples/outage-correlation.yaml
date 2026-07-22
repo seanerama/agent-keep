@@ -1,0 +1,171 @@
+# Reference agent 1 — the worked example from VISION.md ("A Worked Example").
+# Watches the monitoring stack, syslog, and the device inventory; correlates
+# alarms into probable-cause summaries; pages the NOC room in WebEx. It must
+# never touch device configuration — so no shell, filesystem, or config tool
+# appears anywhere below: absent from the image, not disabled (contract
+# agent-spec, binding rule 2). Reviewed section-by-section in
+# docs/security-review-walkthrough.md.
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Outage Correlation
+  slug: outage-correlation
+  description: Correlates network alarms into probable-cause summaries and pages the NOC.
+  specVersion: 0.1.0
+spec:
+  persona:
+    identity: >-
+      You are the NOC outage-correlation agent. You watch the alarm feed,
+      correlate alarms with metrics, syslog, and the device inventory into
+      probable-cause summaries, and page the NOC room when impact is probable.
+    tone: terse, factual, incident-report style
+    instructions:
+      - Correlate before you page; one page per probable cause, not per alarm.
+      - Cite the alarms, log lines, and devices behind every conclusion.
+      - You have no way to change device state; never claim or attempt to.
+    source: static # personality is fixed config; memory never rewrites it
+  triggers:
+    activations:
+      - kind: message # NOC engineers can ask questions directly
+      - kind: event-subscription # the alarm feed drives the agent
+        source: alertmanager
+        event: alarm.raised
+        prompt: >-
+          Triage this alarm. Correlate it with active alarms, recent syslog,
+          and the device inventory; if it indicates a probable outage, produce
+          a probable-cause summary and page the NOC room.
+  channels:
+    - type: webex # the worked example's channel: WebEx,
+      transport: webhook # webhook mode,
+      verification:
+        method: signature # signature verification ON
+        secretEnv: WEBEX_WEBHOOK_SECRET
+  gateway:
+    queue: redis # Redis-backed queue: alarms survive a restart mid-incident
+    concurrency: serial # one correlation at a time per session — coherent narratives
+    identityUnification: separate # single channel; nothing to unify
+    allowlist: # owner plus the NOC roster — nobody else gets in
+      policy: tiered
+      roster:
+        - id: webex:nina.owner@example.com
+          tier: owner
+        - id: webex:kofi.noc@example.com
+          tier: trusted
+        - id: webex:mara.noc@example.com
+          tier: trusted
+        - id: webex:jules.noc@example.com
+          tier: trusted
+  sessions:
+    mode: single
+    definition: per-channel # the NOC room is the conversation
+    history:
+      strategy: retrieval # pull only incident-relevant past turns into context
+      topK: 5
+  memory:
+    # Retrieval memory over the incident summaries the agent files. WHAT gets
+    # embedded is a typed selection: agent-written summaries only — raw
+    # transcripts never enter the vector store.
+    structure:
+      kind: vectors
+      store: pgvector
+      corpus: agent-summaries
+    writePolicy: agent-autonomous # the agent files summaries itself — a
+      # privileged, always-audited write path
+  skills: [] # no instruction packs; nothing rides into the prompt unlisted
+  tools:
+    - name: observability # read-only MCP: monitoring stack + syslog
+      transport:
+        kind: http
+        url: https://observability.noc.internal:8443/mcp
+      allow:
+        - name: query_alarms
+          scope: read-only
+        - name: query_metrics
+          scope: read-only
+        - name: search_syslog
+          scope: read-only
+      secretEnvs: [OBSERVABILITY_MCP_TOKEN]
+    - name: device-inventory # read-only MCP: the device inventory
+      transport:
+        kind: http
+        url: https://inventory.noc.internal:8443/mcp
+      allow:
+        - name: get_device
+          scope: read-only
+        - name: search_devices
+          scope: read-only
+      secretEnvs: [INVENTORY_MCP_TOKEN]
+    - name: noc-paging # the ONLY write in the image: page one named room
+      transport:
+        kind: stdio
+        command: mcp-webex-page
+      allow:
+        - name: page_room
+          scope: read-write
+          # Typed room pin: the tool executor (stage 6) FORCES this server-
+          # side — the grant can page noc-outages and nowhere else; a model
+          # attempt to override is denied and audited. The stage-7 MCP client
+          # manager plugs this stdio transport into that executor; `foundry
+          # build` still fails loudly on this spec for the components that
+          # remain unimplemented (anthropic provider, egress enforcement, ...).
+          constraints:
+            room: noc-outages
+      secretEnvs: [WEBEX_BOT_TOKEN]
+  approval:
+    # Default-deny with an explicit auto-approve list. The five read-only
+    # lookups and the room-pinned page are pre-approved; anything else —
+    # and nothing else exists in spec.tools — would require confirmation.
+    # Paging is pre-approved deliberately: it is the agent's purpose, and a
+    # 03:00 alarm cannot wait for a human to approve waking a human.
+    policy: allowlist-confirm-rest
+    autoApprove:
+      - observability.query_alarms
+      - observability.query_metrics
+      - observability.search_syslog
+      - device-inventory.get_device
+      - device-inventory.search_devices
+      - noc-paging.page_room
+  sandbox:
+    profile: container
+    # Egress is empty by default; every entry below is a host this agent
+    # genuinely needs. Nothing else is reachable, by construction.
+    egress:
+      - webexapis.com:443 # WebEx API: message replies + the paging server
+      - api.anthropic.com:443 # model provider (both tiers)
+      - observability.noc.internal:8443 # observability MCP server
+      - inventory.noc.internal:8443 # inventory MCP server
+      - redis.noc.internal:6379 # the gateway queue
+      - postgres.noc.internal:5432 # persistence tier + pgvector memory
+  models:
+    provider: anthropic # default lane = the cheap triage model
+    anthropic:
+      model: claude-haiku-4-5
+      pricing: # operator-declared rates the USD budget enforces against
+        usdPerMillionInputTokens: 1.0
+        usdPerMillionOutputTokens: 5.0
+    tiers:
+      - name: triage # cheap model reads every alarm
+        provider: anthropic
+        anthropic:
+          model: claude-haiku-4-5
+          pricing:
+            usdPerMillionInputTokens: 1.0
+            usdPerMillionOutputTokens: 5.0
+      - name: correlation # flagship escalation for correlation narratives
+        provider: anthropic
+        anthropic:
+          model: claude-opus-4-1
+          pricing:
+            usdPerMillionInputTokens: 15.0
+            usdPerMillionOutputTokens: 75.0
+    budgets:
+      maxUsdPerSession: 5.0
+      onExceed: warn # alert on overspend, but never go silent mid-incident
+  observability:
+    logLevel: info
+    audit:
+      sink: jsonl # append-only; every tool call is recorded with its
+      # triggering context (record format is factory-level, ADR 0003)
+      path: /var/lib/agent-keep/audit.jsonl
+  persistence:
+    tier: postgres # sessions, transcripts, and the pgvector memory store

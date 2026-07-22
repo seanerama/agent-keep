@@ -1,0 +1,147 @@
+# Full-featured keep/v1 fixture: exercises every section and most option
+# families of the stage-2 schema. Schema-valid by construction; NOT buildable
+# by the stage-1 component library (foundry build fails with a clear
+# "component not implemented" error — that is tested).
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Full Featured Reference
+  slug: full-featured
+  description: Reference fixture exercising every keep/v1 section.
+  specVersion: 0.1.0
+spec:
+  persona:
+    identity: You are Atlas, the household operations agent.
+    tone: concise and warm
+    instructions:
+      - Always answer in metric units.
+      - Never take an action you cannot explain.
+    source: both
+    precedence: static-over-learned
+  triggers:
+    activations:
+      - kind: message
+      - kind: schedule
+        cron: "0 7 * * 1-5"
+        prompt: Summarize overnight alerts for the owner.
+      - kind: event-subscription
+        source: alertmanager
+        event: outage.detected
+        prompt: Investigate the outage and report findings.
+  channels:
+    - type: dev-http
+      port: 8000
+    - type: discord
+      transport: websocket
+      verification:
+        method: token
+        secretEnv: DISCORD_BOT_TOKEN
+    - type: slack
+      transport: webhook
+      verification:
+        method: signature
+        secretEnv: SLACK_SIGNING_SECRET
+    - type: webex
+    - type: sms
+      transport: polling
+      verification:
+        method: none
+  gateway:
+    queue: redis
+    concurrency: concurrent-locked
+    identityUnification: challenge
+    allowlist:
+      policy: tiered
+      roster:
+        - id: discord:1002003004
+          tier: owner
+        - id: sms:+15550100
+          tier: trusted
+        - id: slack:U0000001
+          tier: guest
+  sessions:
+    mode: single
+    definition: hybrid
+    history:
+      strategy: layered
+      windowTurns: 30
+      summarize: true
+      retrievalTopK: 8
+  memory:
+    structure:
+      kind: layered
+      store: pgvector
+    writePolicy: agent-autonomous
+  skills:
+    - name: outage-runbook
+      version: 1.2.0
+      selection: keyword
+      keywords: [outage, incident]
+    - name: house-style
+      selection: always
+    - name: deep-research
+      selection: model-driven
+  tools:
+    - name: home-assistant
+      transport:
+        kind: http
+        url: https://ha.internal:8123/mcp
+      allow:
+        - name: get_state
+          scope: read-only
+        - name: call_service
+          scope: read-write
+      secretEnvs: [HOME_ASSISTANT_TOKEN]
+    - name: workspace-files
+      transport:
+        kind: stdio
+        command: mcp-filesystem
+        args: ["--root", "/workspace"]
+      allow:
+        - name: read_file
+  approval:
+    policy: allowlist-confirm-rest
+    autoApprove:
+      - home-assistant.get_state
+      - workspace-files.read_file
+  sandbox:
+    profile: container
+    egress:
+      - ha.internal:8123
+      - api.anthropic.com
+      - "*.discord.gg"
+  models:
+    provider: anthropic
+    anthropic:
+      model: claude-sonnet-4-5
+      apiKeyEnv: ANTHROPIC_API_KEY
+      pricing: # pricing is allowed without a USD budget (additive, optional)
+        usdPerMillionInputTokens: 3.0
+        usdPerMillionOutputTokens: 15.0
+    tiers:
+      - name: triage
+        provider: static
+        static:
+          script: [ack]
+      - name: reasoning
+        provider: anthropic
+        anthropic:
+          model: claude-opus-4-1
+          pricing:
+            usdPerMillionInputTokens: 15.0
+            usdPerMillionOutputTokens: 75.0
+    budgets:
+      # No maxUsdPerSession: this spec routes a tier to the hermetic `static`
+      # provider, which has no declarable price, so a USD budget would be
+      # refused at load (stage 25). Token budget still applies.
+      maxTokensPerSession: 200000
+      onExceed: block
+  observability:
+    logLevel: debug
+    audit:
+      sink: jsonl
+      path: /var/lib/agent-keep/audit.jsonl
+    health:
+      path: /healthz
+  persistence:
+    tier: postgres
