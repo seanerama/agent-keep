@@ -1,0 +1,70 @@
+# The default chatbot — OPENAI variant (provider: openai). This takes the
+# chassis live on a CLOUD OpenAI model (issue #15, the second provider-agnostic
+# adapter): a real gpt-4o-mini reply from api.openai.com, reached THROUGH the
+# paired egress proxy — the anthropic-shaped cloud path, key + cloud egress,
+# every model call still allowlist-enforced and audited exactly like the
+# anthropic and ollama variants.
+#
+# WHY A SEPARATE FILE (not an edit to default-chatbot.yaml): the published image
+# ghcr.io/seanerama/agent-keep-default-chatbot is baked STATIC-ONLY (CI builds
+# from default-chatbot.yaml). To get a real OpenAI reply the Operator BUILDS
+# this variant and deploys it with the key injected at run time. The ONLY host
+# this reaches is api.openai.com:443; the worker never routes there directly —
+# its HTTP(S)_PROXY points at the egress proxy. The key VALUE is never in this
+# spec or the image (contract rule 3): the deploy-time secret mechanism (stage 7)
+# injects OPENAI_API_KEY before the worker boots. The slug is unchanged so it
+# deploys to the same chassis (agent-keep@default-chatbot).
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Default Chatbot
+  slug: default-chatbot
+  description: The chassis default chatbot — dev-http in, audited OpenAI model loop out.
+  specVersion: 0.1.0
+spec:
+  persona:
+    identity: >-
+      You are the Agent Keep default chatbot — the resident agent of the
+      chassis. Answer plainly and briefly; you exist to prove the chassis
+      end to end: message in, model call, audited reply out.
+    source: static # personality is fixed config; nothing rewrites it
+  channels:
+    - type: dev-http # ADR 0003: first channel is dev-http; platform
+      port: 8000 #     channels are post-skeleton stages
+  gateway:
+    queue: in-process # single container, serial loop — no broker
+  sessions:
+    mode: single
+  approval: {} # present but trivially empty — no tools are granted,
+  #              so nothing can require approval (absence, not policy)
+  sandbox:
+    profile: container
+    # Egress allowlist: ONLY the OpenAI API endpoint. Every model call is the
+    # ALLOW record for api.openai.com:443 the proxy audits; everything else
+    # stays denied + audited.
+    egress:
+      - api.openai.com:443
+  models:
+    # THE flip: provider openai. The key is named, never valued (apiKeyEnv);
+    # the deploy injects OPENAI_API_KEY at run time and the adapter requires it
+    # at construction (loud boot failure if absent). The one allowlisted host
+    # above is the only host this reaches, traversed via the egress proxy.
+    # The model_router still ships and meters every call per session (token
+    # budget below), so audit token accounting is unchanged from the other
+    # variants (input/output COUNTS record; USD pricing is omitted here).
+    provider: openai
+    openai:
+      model: gpt-4o-mini # a small current model; change as desired
+      baseHost: api.openai.com:443 # schema default; the public OpenAI API
+      apiKeyEnv: OPENAI_API_KEY # env var NAME only — the value is deploy-time
+    tiers: [] # no task routing — one provider fits the whole job
+    budgets: # token accounting ON: selects the model-router component,
+      maxTokensPerSession: 200000 # which meters every call per session
+      onExceed: block
+  observability:
+    logLevel: info
+    audit:
+      sink: jsonl # append-only; every model call is recorded
+      path: /var/lib/agent-keep/audit.jsonl
+  persistence:
+    tier: sqlite # real file-backed sessions (SQLITE_PATH at run time)

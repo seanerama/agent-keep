@@ -1006,16 +1006,86 @@ class OllamaProviderConfig(StrictModel):
         return self
 
 
+class OpenAIProviderConfig(StrictModel):
+    """Configuration for the `openai` model provider (issue #15 — the second
+    provider-agnostic adapter, the anthropic-shaped CLOUD variant of the
+    stage-8 ollama pattern).
+
+    A cloud provider like `anthropic`: it needs an API key and egress to
+    `api.openai.com`. Unlike the ollama config it names an `apiKeyEnv` (the
+    key VALUE is never in the spec — contract rule 3); like the ollama config
+    its `baseHost` is configurable (so OpenAI-compatible endpoints work and the
+    egress cross-check reads the host from the CONFIG, not a constant). The
+    worker builds `https://<baseHost>` and reaches it THROUGH the audited
+    egress proxy, exactly like the anthropic path. v1 additive amendment,
+    stage 10 (issue #15 second cut).
+    """
+
+    model: str = Field(min_length=1, description="OpenAI model name, e.g. 'gpt-4o-mini'.")
+    baseHost: str = Field(
+        default="api.openai.com:443",
+        description=(
+            "OpenAI API host[:port] the worker reaches THROUGH the egress proxy "
+            "(cross-validated against sandbox.egress). Same host[:port] grammar as "
+            "sandbox.egress; default 'api.openai.com:443' (the public OpenAI API). "
+            "Configurable so OpenAI-compatible endpoints work."
+        ),
+    )
+    apiKeyEnv: str = Field(
+        default="OPENAI_API_KEY",
+        pattern=ENV_VAR_NAME,
+        description="Env var NAME holding the API key (never the value — contract rule 3).",
+    )
+    maxTokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=128_000,
+        description=(
+            "Max output tokens per model call (Chat Completions max_tokens); None = the "
+            "adapter default (the API's own default). Ceiling 128000 matches the "
+            "anthropic/ollama config convention."
+        ),
+    )
+    pricing: Pricing | None = Field(
+        default=None,
+        description=(
+            "Operator-declared token pricing for this model path; required on every "
+            "selectable path iff budgets.maxUsdPerSession is set (cross-validated). "
+            "None = no pricing declared."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _base_host_wellformed(self) -> Self:
+        if not re.match(EGRESS_HOST, self.baseHost):
+            raise ValueError(
+                f"models.openai.baseHost {self.baseHost!r} is not a host[:port] "
+                "(optionally '*.' wildcard-subdomain) entry"
+            )
+        _, colon, port = self.baseHost.rpartition(":")
+        if colon and not 1 <= int(port) <= 65535:
+            raise ValueError(
+                f"models.openai.baseHost {self.baseHost!r} has port {port} outside 1-65535"
+            )
+        return self
+
+
 def _check_provider_config(
     where: str,
     provider: str,
     static: StaticProviderConfig | None,
     anthropic: AnthropicProviderConfig | None,
     ollama: OllamaProviderConfig | None,
+    openai: OpenAIProviderConfig | None,
 ) -> None:
     configured = {
         name
-        for name, cfg in (("static", static), ("anthropic", anthropic), ("ollama", ollama))
+        for name, cfg in (
+            ("static", static),
+            ("anthropic", anthropic),
+            ("ollama", ollama),
+            ("openai", openai),
+        )
         if cfg is not None
     }
     if provider not in configured:
@@ -1034,7 +1104,7 @@ class ModelTier(StrictModel):
     """
 
     name: str = Field(pattern=KEBAB, description="Tier name, e.g. 'triage' or 'reasoning'.")
-    provider: Literal["static", "anthropic", "ollama"] = Field(
+    provider: Literal["static", "anthropic", "ollama", "openai"] = Field(
         description="Provider for this tier (blueprint model/llmrouter)."
     )
     static: StaticProviderConfig | None = Field(
@@ -1048,6 +1118,10 @@ class ModelTier(StrictModel):
         default=None,
         description="Ollama provider config; required iff provider is 'ollama'.",
     )
+    openai: OpenAIProviderConfig | None = Field(
+        default=None,
+        description="OpenAI provider config; required iff provider is 'openai'.",
+    )
 
     @model_validator(mode="after")
     def _config_matches_provider(self) -> Self:
@@ -1057,6 +1131,7 @@ class ModelTier(StrictModel):
             self.static,
             self.anthropic,
             self.ollama,
+            self.openai,
         )
         return self
 
@@ -1089,7 +1164,7 @@ class Models(StrictModel):
     `model/llmrouter`). 'static' is a first-class provider (ADR 0004).
     """
 
-    provider: Literal["static", "anthropic", "ollama"] = Field(
+    provider: Literal["static", "anthropic", "ollama", "openai"] = Field(
         description="Default provider when no tier routing applies (blueprint model/llmrouter)."
     )
     static: StaticProviderConfig | None = Field(
@@ -1102,6 +1177,10 @@ class Models(StrictModel):
     ollama: OllamaProviderConfig | None = Field(
         default=None,
         description="Ollama provider config; required iff provider is 'ollama'.",
+    )
+    openai: OpenAIProviderConfig | None = Field(
+        default=None,
+        description="OpenAI provider config; required iff provider is 'openai'.",
     )
     tiers: list[ModelTier] = Field(
         default_factory=list,
@@ -1117,7 +1196,9 @@ class Models(StrictModel):
 
     @model_validator(mode="after")
     def _config_matches_provider(self) -> Self:
-        _check_provider_config("models", self.provider, self.static, self.anthropic, self.ollama)
+        _check_provider_config(
+            "models", self.provider, self.static, self.anthropic, self.ollama, self.openai
+        )
         names = [tier.name for tier in self.tiers]
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
@@ -1145,6 +1226,7 @@ class Models(StrictModel):
             provider: str,
             anthropic: AnthropicProviderConfig | None,
             ollama: OllamaProviderConfig | None,
+            openai: OpenAIProviderConfig | None,
         ) -> None:
             if provider == "static":
                 unpriced.append(f"{where} (provider 'static' has no declarable price)")
@@ -1152,10 +1234,18 @@ class Models(StrictModel):
                 unpriced.append(f"{where}.pricing")
             elif provider == "ollama" and (ollama is None or ollama.pricing is None):
                 unpriced.append(f"{where}.pricing")
+            elif provider == "openai" and (openai is None or openai.pricing is None):
+                unpriced.append(f"{where}.pricing")
 
-        check("models", self.provider, self.anthropic, self.ollama)
+        check("models", self.provider, self.anthropic, self.ollama, self.openai)
         for tier in self.tiers:
-            check(f"models.tiers['{tier.name}']", tier.provider, tier.anthropic, tier.ollama)
+            check(
+                f"models.tiers['{tier.name}']",
+                tier.provider,
+                tier.anthropic,
+                tier.ollama,
+                tier.openai,
+            )
         if unpriced:
             raise ValueError(
                 "models.budgets.maxUsdPerSession is set but these selectable model paths "

@@ -356,10 +356,11 @@ One allowed tool on an MCP server (blueprint `capabilities/mcpmgr`: 'tool availa
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `provider` | one of: `static`, `anthropic`, `ollama` | yes | — | Default provider when no tier routing applies (blueprint model/llmrouter). |
+| `provider` | one of: `static`, `anthropic`, `ollama`, `openai` | yes | — | Default provider when no tier routing applies (blueprint model/llmrouter). |
 | `static` | [StaticProviderConfig](#staticproviderconfig) or null | no | `null` | Static provider config; required iff provider is 'static'. |
 | `anthropic` | [AnthropicProviderConfig](#anthropicproviderconfig) or null | no | `null` | Anthropic provider config; required iff provider is 'anthropic'. |
 | `ollama` | [OllamaProviderConfig](#ollamaproviderconfig) or null | no | `null` | Ollama provider config; required iff provider is 'ollama'. |
+| `openai` | [OpenAIProviderConfig](#openaiproviderconfig) or null | no | `null` | OpenAI provider config; required iff provider is 'openai'. |
 | `tiers` | list of [ModelTier](#modeltier) | no | `[]` | Routing tiers by task type (blueprint model/llmrouter: cheap model for triage, flagship for reasoning). Empty = single default provider. |
 | `budgets` | [ModelBudgets](#modelbudgets) or null | no | `null` | Per-session cost control (blueprint model/llmrouter); None = no budgets. |
 
@@ -402,6 +403,18 @@ Configuration for the `ollama` model provider (ADR 0006 — local inference reac
 | `maxTokens` | int or null | no | `null` | Max output tokens per model call (Ollama options.num_predict); None = the adapter default (Ollama's own num_predict default). Ceiling 128000 matches the anthropic config's convention. (ge: `1`; le: `128000`) |
 | `pricing` | [Pricing](#pricing) or null | no | `null` | Operator-declared token pricing for this model path; required on every selectable path iff budgets.maxUsdPerSession is set (cross-validated). Usually omitted for ollama (local compute). None = no pricing declared. |
 
+## OpenAIProviderConfig
+
+Configuration for the `openai` model provider (issue #15 — the second provider-agnostic adapter, the anthropic-shaped CLOUD variant of the stage-8 ollama pattern). A cloud provider like `anthropic`: it needs an API key and egress to `api.openai.com`. Unlike the ollama config it names an `apiKeyEnv` (the key VALUE is never in the spec — contract rule 3); like the ollama config its `baseHost` is configurable (so OpenAI-compatible endpoints work and the egress cross-check reads the host from the CONFIG, not a constant). The worker builds `https://<baseHost>` and reaches it THROUGH the audited egress proxy, exactly like the anthropic path. v1 additive amendment, stage 10 (issue #15 second cut).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `model` | str | yes | — | OpenAI model name, e.g. 'gpt-4o-mini'. (min_length: `1`) |
+| `baseHost` | str | no | `"api.openai.com:443"` | OpenAI API host[:port] the worker reaches THROUGH the egress proxy (cross-validated against sandbox.egress). Same host[:port] grammar as sandbox.egress; default 'api.openai.com:443' (the public OpenAI API). Configurable so OpenAI-compatible endpoints work. |
+| `apiKeyEnv` | str | no | `"OPENAI_API_KEY"` | Env var NAME holding the API key (never the value — contract rule 3). (pattern: `^[A-Z][A-Z0-9_]*$`) |
+| `maxTokens` | int or null | no | `null` | Max output tokens per model call (Chat Completions max_tokens); None = the adapter default (the API's own default). Ceiling 128000 matches the anthropic/ollama config convention. (ge: `1`; le: `128000`) |
+| `pricing` | [Pricing](#pricing) or null | no | `null` | Operator-declared token pricing for this model path; required on every selectable path iff budgets.maxUsdPerSession is set (cross-validated). None = no pricing declared. |
+
 ## ModelTier
 
 One routing tier (blueprint `model/llmrouter`, decisions 'Route by task' and 'Where does cost control live?', option 'Tiered routing by task type').
@@ -409,10 +422,11 @@ One routing tier (blueprint `model/llmrouter`, decisions 'Route by task' and 'Wh
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | str | yes | — | Tier name, e.g. 'triage' or 'reasoning'. (pattern: `^[a-z0-9]+(-[a-z0-9]+)*$`) |
-| `provider` | one of: `static`, `anthropic`, `ollama` | yes | — | Provider for this tier (blueprint model/llmrouter). |
+| `provider` | one of: `static`, `anthropic`, `ollama`, `openai` | yes | — | Provider for this tier (blueprint model/llmrouter). |
 | `static` | [StaticProviderConfig](#staticproviderconfig) or null | no | `null` | Static provider config; required iff provider is 'static'. |
 | `anthropic` | [AnthropicProviderConfig](#anthropicproviderconfig) or null | no | `null` | Anthropic provider config; required iff provider is 'anthropic'. |
 | `ollama` | [OllamaProviderConfig](#ollamaproviderconfig) or null | no | `null` | Ollama provider config; required iff provider is 'ollama'. |
+| `openai` | [OpenAIProviderConfig](#openaiproviderconfig) or null | no | `null` | OpenAI provider config; required iff provider is 'openai'. |
 
 ## ModelBudgets
 

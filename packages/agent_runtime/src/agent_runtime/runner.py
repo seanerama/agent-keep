@@ -36,6 +36,7 @@ from keep_spec.models import (
     AnthropicProviderConfig,
     FactsMemory,
     OllamaProviderConfig,
+    OpenAIProviderConfig,
     RetrievalHistory,
     SlidingWindowHistory,
     StaticProviderConfig,
@@ -97,6 +98,7 @@ def _build_provider(
     static: "StaticProviderConfig | None",
     anthropic: "AnthropicProviderConfig | None",
     ollama: "OllamaProviderConfig | None",
+    openai: "OpenAIProviderConfig | None",
 ) -> ModelProvider:
     """One provider instance from a (provider, config) pair — default or tier.
 
@@ -104,7 +106,10 @@ def _build_provider(
     names (apiKeyEnv); a missing key is a loud boot failure naming that var —
     never a lazily-failing half-booted agent. The ollama adapter (ADR 0006)
     takes NO key: it reaches the spec-declared baseHost (built into an
-    `http://<baseHost>` base URL) THROUGH the egress proxy.
+    `http://<baseHost>` base URL) THROUGH the egress proxy. The openai adapter
+    (issue #15) is the anthropic-shaped cloud variant: it needs the spec-named
+    key (loud boot failure if absent) AND reaches the spec-declared baseHost
+    (built into an `https://<baseHost>` base URL) through the egress proxy.
 
     `maxTokens` (v1 additive amendment, stage 13) is forwarded only when the
     spec sets it — an absent field keeps the adapter's own default, so every
@@ -123,6 +128,17 @@ def _build_provider(
         if ollama.maxTokens is not None:
             ollama_kwargs["max_tokens"] = ollama.maxTokens
         built = load_component("ollama-provider").OllamaProvider(**ollama_kwargs)
+        return built
+    if provider == "openai":
+        assert openai is not None  # provider == "openai" (schema-validated)
+        openai_kwargs: dict[str, Any] = {
+            "model": openai.model,
+            "base_url": f"https://{openai.baseHost}",
+            "api_key_env": openai.apiKeyEnv,
+        }
+        if openai.maxTokens is not None:
+            openai_kwargs["max_tokens"] = openai.maxTokens
+        built = load_component("openai-provider").OpenAIProvider(**openai_kwargs)
         return built
     assert anthropic is not None  # provider == "anthropic" (schema-validated)
     kwargs: dict[str, Any] = {"model": anthropic.model, "api_key_env": anthropic.apiKeyEnv}
@@ -244,22 +260,28 @@ def build_app(spec: AgentSpec) -> tuple[AgentCore, Any]:
         )
     assembler = load_component("prompt-assembler").PromptAssembler(window_turns=window_turns)
     models = spec.spec.models
-    provider = _build_provider(models.provider, models.static, models.anthropic, models.ollama)
+    provider = _build_provider(
+        models.provider, models.static, models.anthropic, models.ollama, models.openai
+    )
     router: ModelRouterProtocol | None = None
     if models.tiers or models.budgets is not None:
         tier_providers = {
-            tier.name: _build_provider(tier.provider, tier.static, tier.anthropic, tier.ollama)
+            tier.name: _build_provider(
+                tier.provider, tier.static, tier.anthropic, tier.ollama, tier.openai
+            )
             for tier in models.tiers
         }
         budgets = models.budgets
         router_module = load_component("model-router")
 
-        def _price(config: "AnthropicProviderConfig | OllamaProviderConfig | None") -> Any:
+        def _price(
+            config: "AnthropicProviderConfig | OllamaProviderConfig | OpenAIProviderConfig | None",
+        ) -> Any:
             # Operator-declared pricing -> the router's rate object (stage 25).
             # Cross-validation guarantees pricing is present on every path when
-            # a USD budget is set, so unpriced here means no USD budget. Both the
-            # anthropic and ollama configs carry an optional `pricing` block
-            # (ollama usually omits it — local compute, ADR 0006).
+            # a USD budget is set, so unpriced here means no USD budget. The
+            # anthropic, ollama, and openai configs each carry an optional
+            # `pricing` block (ollama usually omits it — local compute, ADR 0006).
             if config is None or config.pricing is None:
                 return None
             return router_module.ModelPrice(
@@ -271,12 +293,15 @@ def build_app(spec: AgentSpec) -> tuple[AgentCore, Any]:
             provider_name: str,
             anthropic: "AnthropicProviderConfig | None",
             ollama: "OllamaProviderConfig | None",
+            openai: "OpenAIProviderConfig | None",
         ) -> Any:
             # The priced config for a selectable path is the SELECTED provider's
             # config (static has no priceable cost — schema refuses a USD budget
             # over it, so it is never priced here).
             if provider_name == "ollama":
                 return _price(ollama)
+            if provider_name == "openai":
+                return _price(openai)
             return _price(anthropic)
 
         router = router_module.ModelRouter(
@@ -285,9 +310,11 @@ def build_app(spec: AgentSpec) -> tuple[AgentCore, Any]:
             max_tokens_per_session=budgets.maxTokensPerSession if budgets else None,
             max_usd_per_session=budgets.maxUsdPerSession if budgets else None,
             on_exceed=budgets.onExceed if budgets else "block",
-            default_price=_path_price(models.provider, models.anthropic, models.ollama),
+            default_price=_path_price(
+                models.provider, models.anthropic, models.ollama, models.openai
+            ),
             tier_prices={
-                tier.name: _path_price(tier.provider, tier.anthropic, tier.ollama)
+                tier.name: _path_price(tier.provider, tier.anthropic, tier.ollama, tier.openai)
                 for tier in models.tiers
             },
         )

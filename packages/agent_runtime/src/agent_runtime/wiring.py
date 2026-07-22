@@ -21,6 +21,7 @@ from keep_spec import (
     EventTrigger,
     HttpTransport,
     OllamaProviderConfig,
+    OpenAIProviderConfig,
     ScheduleTrigger,
     SlackChannel,
     WebexChannel,
@@ -74,6 +75,7 @@ COMPONENT_REGISTRY: dict[str, str] = {
     "static-provider": "static_provider",
     "anthropic-provider": "anthropic_provider",
     "ollama-provider": "ollama_provider",
+    "openai-provider": "openai_provider",
     "model-router": "model_router",
     "jsonl-audit": "jsonl_audit",
     "local-tools": "local_tools",
@@ -119,6 +121,7 @@ _PROVIDER_COMPONENTS = {
     "static": "static-provider",
     "anthropic": "anthropic-provider",
     "ollama": "ollama-provider",
+    "openai": "openai-provider",
 }
 _AUDIT_COMPONENTS = {"jsonl": "jsonl-audit"}
 #: Persistence tiers this library can build. 'postgres' (stage 15) is the
@@ -542,6 +545,54 @@ def _ollama_egress_targets(spec: AgentSpec) -> list[_EgressTarget]:
     return targets
 
 
+#: Default OpenAI port when a baseHost omits `:port` (https). Kept alongside the
+#: ollama default-port constant above; the openai baseHost default carries :443.
+OPENAI_DEFAULT_PORT = 443
+
+
+def _openai_egress_targets(spec: AgentSpec) -> list[_EgressTarget]:
+    """The OpenAI API host:port for every spec site selecting `openai`.
+
+    Like the ollama endpoint (and unlike the anthropic provider's constant,
+    module-known host), the openai endpoint is spec-declared: the host comes
+    from the SELECTED openai config's ``baseHost`` (top-level or per-tier —
+    configurable so OpenAI-compatible endpoints work), so a spec selecting
+    openai must allowlist exactly that host:port in sandbox.egress. One target
+    per selecting site (each may carry a different baseHost)."""
+    models = spec.spec.models
+    sites: list[tuple[str, OpenAIProviderConfig | None]] = [
+        ("spec.models.provider", models.openai if models.provider == "openai" else None)
+    ]
+    sites += [
+        (f"spec.models.tiers['{tier.name}']", tier.openai)
+        for tier in models.tiers
+        if tier.provider == "openai"
+    ]
+    targets: list[_EgressTarget] = []
+    for site, config in sites:
+        if config is None:
+            # Schema cross-validation guarantees a config on a selecting site;
+            # nothing to allowlist without one.
+            continue
+        base_host, _, port_text = config.baseHost.rpartition(":")
+        if base_host:
+            host, port = base_host.lower(), int(port_text)
+        else:
+            host, port = config.baseHost.lower(), OPENAI_DEFAULT_PORT
+        targets.append(
+            _EgressTarget(
+                host=host,
+                port=port,
+                violation=(
+                    f"openai provider host '{host}:{port}' is not covered by "
+                    f"sandbox.egress — add '{config.baseHost}' or the OpenAI API is "
+                    f"unreachable by construction ({site}.openai.baseHost)"
+                ),
+            )
+        )
+    return targets
+
+
 def _violations_for(targets: list[_EgressTarget], egress: list[str]) -> list[str]:
     return [
         target.violation
@@ -577,6 +628,7 @@ def egress_violations(spec: AgentSpec) -> list[str]:
         + _channel_egress_targets(spec)
         + _provider_egress_targets(spec)
         + _ollama_egress_targets(spec)
+        + _openai_egress_targets(spec)
     )
     return _violations_for(targets, spec.spec.sandbox.egress)
 

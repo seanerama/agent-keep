@@ -83,6 +83,8 @@ COMPONENT_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "anthropic-provider": ("httpx",),
     # The ollama adapter is hand-rolled on httpx too (ADR 0006, no SDK, no key).
     "ollama-provider": ("httpx",),
+    # The openai adapter is hand-rolled on httpx too (issue #15, no SDK).
+    "openai-provider": ("httpx",),
 }
 
 #: Extra components/ modules a selected component imports at MODULE scope and

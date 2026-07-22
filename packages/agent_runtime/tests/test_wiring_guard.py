@@ -534,6 +534,112 @@ def test_ollama_default_port_covered_by_portless_egress_entry(
     assert egress_violations(spec) == []
 
 
+# ------------------------------------------------------ openai provider (stage 10)
+
+
+def _openai_models(base_host: str = "api.openai.com:443") -> dict[str, Any]:
+    return {
+        "provider": "openai",
+        "openai": {"model": "gpt-4o-mini", "baseHost": base_host},
+    }
+
+
+def test_openai_provider_is_buildable_and_ships_its_module(
+    skeleton_data: dict[str, Any],
+) -> None:
+    """A spec selecting `openai` builds (the adapter exists) and the
+    openai_provider module ships — the anthropic/ollama provider pattern."""
+    from agent_runtime.wiring import component_module_names
+
+    skeleton_data["spec"]["models"] = _openai_models()
+    skeleton_data["spec"]["sandbox"]["egress"] = ["api.openai.com:443"]
+    spec = validate_spec_data(skeleton_data)
+    assert unimplemented_selections(spec) == []
+    ensure_buildable(spec)  # must not raise
+    modules = component_module_names(spec)
+    assert "openai_provider" in modules
+    # absence: the other providers are NOT in an openai-only image
+    assert "anthropic_provider" not in modules
+    assert "ollama_provider" not in modules
+    assert "static_provider" not in modules
+
+
+def test_openai_without_base_host_in_egress_fails_cross_validation(
+    skeleton_data: dict[str, Any],
+) -> None:
+    """The openai baseHost — read from the CONFIG, not a constant — must be
+    covered by sandbox.egress, or the model call is unreachable by construction
+    (the ollama cross-check pattern, host from the spec)."""
+    skeleton_data["spec"]["models"] = _openai_models()
+    skeleton_data["spec"]["sandbox"]["egress"] = []  # baseHost NOT allowlisted
+    spec = validate_spec_data(skeleton_data)
+    assert unimplemented_selections(spec) == []  # the component gap is GONE...
+    [violation] = egress_violations(spec)  # ...but the spec is inconsistent
+    assert "api.openai.com:443" in violation
+    assert "sandbox.egress" in violation
+    assert mcp_egress_violations(spec) == []  # the MCP-only view stays MCP-only
+    with pytest.raises(EgressCrossValidationError, match="api.openai.com:443"):
+        ensure_buildable(spec)
+
+
+def test_openai_wrong_port_in_egress_fails_cross_validation(
+    skeleton_data: dict[str, Any],
+) -> None:
+    """The port matters: a baseHost of :443 is not covered by an egress entry
+    pinned to a different port."""
+    skeleton_data["spec"]["models"] = _openai_models()
+    skeleton_data["spec"]["sandbox"]["egress"] = ["api.openai.com:8443"]
+    spec = validate_spec_data(skeleton_data)
+    assert egress_violations(spec) != []
+    with pytest.raises(EgressCrossValidationError):
+        ensure_buildable(spec)
+
+
+def test_openai_with_base_host_in_egress_is_consistent(
+    skeleton_data: dict[str, Any],
+) -> None:
+    skeleton_data["spec"]["models"] = _openai_models()
+    skeleton_data["spec"]["sandbox"]["egress"] = ["api.openai.com:443"]
+    spec = validate_spec_data(skeleton_data)
+    assert egress_violations(spec) == []
+    ensure_buildable(spec)  # must not raise
+
+
+def test_openai_tier_without_egress_entry_fails_cross_validation(
+    skeleton_data: dict[str, Any],
+) -> None:
+    """A tier-level openai selection needs its host too; selecting it in several
+    places yields one violation per selecting site's baseHost."""
+    skeleton_data["spec"]["models"] = {
+        "provider": "openai",
+        "openai": {"model": "gpt-4o-mini", "baseHost": "api.openai.com:443"},
+        "tiers": [
+            {
+                "name": "reasoning",
+                "provider": "openai",
+                "openai": {"model": "gpt-4o", "baseHost": "api.openai.com:443"},
+            }
+        ],
+    }
+    spec = validate_spec_data(skeleton_data)
+    violations = egress_violations(spec)
+    assert violations != []
+    assert all("api.openai.com:443" in v for v in violations)
+    with pytest.raises(EgressCrossValidationError, match="api.openai.com:443"):
+        ensure_buildable(spec)
+
+
+def test_openai_egress_default_host_matches_the_adapter_constant() -> None:
+    """The openai schema-default baseHost host resolves to the adapter's
+    DEFAULT_BASE_URL host (kept in sync, the anthropic constant convention)."""
+    from urllib.parse import urlsplit
+
+    from agent_runtime.components import openai_provider
+
+    parts = urlsplit(openai_provider.DEFAULT_BASE_URL)
+    assert parts.hostname == "api.openai.com"
+
+
 def _sessions_variant(
     skeleton_data: dict[str, Any],
     *,
