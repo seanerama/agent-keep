@@ -1,0 +1,44 @@
+name: "Bug report"
+description: "A defect found during testing or use. Filed by an agent, operator, or user."
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: "One or two sentences — what's wrong."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: "Numbered, from a known state."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: "What happened instead. Include any error text verbatim."
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: "URL + client, and roughly when (UTC helps)."
+    validations:
+      required: true
+  - type: input
+    id: filed_by
+    attributes:
+      label: Filed by
+      description: "Which machine / agent / person found this."

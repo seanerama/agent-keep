@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tgz
+.DS_Store
+.env
+.env.*
+!.env.*.example
+# Verity's derived state cache — never authoritative (framework-spec §5)
+.verity-cache/
+# Per-app deployment access (host + credential locations) — shared out-of-band,
+# never committed. The committed pointer (.verity/deploy-access.README.md) stays.
+.verity/deploy-access.md

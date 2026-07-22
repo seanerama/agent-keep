@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "name": "Agent Keep",
+  "slug": "agent-keep",
+  "owner": "seanerama",
+  "image_prefix": "ghcr.io/seanerama/agent-keep",
+  "locked_at": "2026-07-22T15:04:07.319Z"
+}

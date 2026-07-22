@@ -1,0 +1,36 @@
+name: CI
+# Agent Keep — Verity hygiene gate (stack-agnostic).
+# Honestly green on a fresh scaffold: secret-scan + a structure check, no faked
+# pass. Lint and test gates are added when the Architect chooses the stack and the
+# walking skeleton lands (the progressive gate — framework-spec §3).
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: read # gitleaks lists PR commits via the API on pull_request
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Required files present
+        run: |
+          for f in README.md LICENSE; do
+            test -f "$f" || { echo "missing required file: $f"; exit 1; }
+          done
+          echo "structure ok"
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
