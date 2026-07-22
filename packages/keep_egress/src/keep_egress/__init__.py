@@ -1,0 +1,83 @@
+"""keep_egress — the egress observation proxy (contract egress-observation v1,
+ADR 0002).
+
+The observed outbound choke point: the agent container has no direct network
+route out; every outbound connection is forced through this paired forward
+proxy (HTTP absolute-form + HTTPS `CONNECT`), which enforces the spec's
+`sandbox.egress` allowlist at runtime, FAIL-CLOSED, and appends one
+audit-record v1 line per connection ATTEMPT — allowed and denied — to its own
+append-only jsonl file. The proxy ships as its OWN container image
+(`ghcr.io/seanerama/agent-keep-egress-proxy`, built by `keep-build
+build-proxy`), never inside the agent's image: the choke point observes the
+agent from outside.
+
+Allowlist source of truth (no second list, ever)
+------------------------------------------------
+The proxy is configured by mounting the SAME `spec.yaml` the agent image was
+baked from (read-only, `KEEP_SPEC_PATH`, default `/etc/agent-keep/spec.yaml`).
+It loads the spec through `keep_spec.load_spec` — the same validator build-time
+cross-validation uses — and takes `spec.sandbox.egress` as the allowlist and
+`metadata.slug`/`metadata.specVersion` as the observed-agent identity. Matching
+semantics live in ONE importable place, `keep_spec.egress` (`host[:port]`,
+`*.` wildcard subdomains, case-insensitive, entry-without-port covers every
+port). A missing or invalid spec refuses to start; an EMPTY allowlist runs and
+denies everything.
+
+Kill-switch: NONE, deliberately. The proxy is a security boundary, not a
+dark-launchable feature — deny-all on an empty allowlist IS the safe default.
+
+The `egress` audit record (frozen field names)
+----------------------------------------------
+audit-record v1, ADDITIVE record kind `egress` with `action: connect`
+(contracts/audit-record.md + contracts/egress-observation.md — documented
+here, never by editing contracts/). Field names froze with this stage's first
+green test and are additive-only from then on:
+
+    id            uuid of the record
+    ts            RFC 3339 UTC timestamp
+    agent.slug    metadata.slug of the observed agent's spec
+    agent.spec_version  metadata.specVersion of that spec
+    event         literal "egress"           (the additive record kind)
+    action        literal "connect"          (per the contract's wire section)
+    target        "host:port" of the attempt ("invalid" for unparseable
+                  requests — a safe representation; raw request bytes are
+                  never logged)
+    verdict       "allowed" | "denied"
+    matched_entry the sandbox.egress entry that allowed it, or null on deny
+    bytes_up      bytes relayed client->target, counted on close
+    bytes_down    bytes relayed target->client, counted on close
+    run_id        run-correlation key when the attempt is attributable to a
+                  run (contract: "when attributable"); the v1 proxy is not
+                  run-aware, so this is null on every record today
+
+Digests-not-payloads discipline: the proxy records connection TARGETS as
+host:port only — never URLs beyond host:port, never headers, never bodies,
+never decrypted CONNECT payloads (payload-level inspection would be a NEW
+contract, per egress-observation v1).
+
+Runtime configuration (all env, read by `keep_egress.runner`):
+
+    KEEP_SPEC_PATH          mounted spec.yaml     default /etc/agent-keep/spec.yaml
+    KEEP_EGRESS_AUDIT_PATH  proxy-own audit file  default /var/lib/agent-keep/egress-audit.jsonl
+    KEEP_EGRESS_HOST        bind address          default 0.0.0.0
+    KEEP_EGRESS_PORT        bind port             default 3128
+
+The audit path is the PROXY's own file, separate from the worker's
+`audit.jsonl` — same append-only plane, no write collision.
+"""
+
+from keep_egress.proxy import EgressProxy
+from keep_egress.records import (
+    EgressAuditRecord,
+    EgressAuditSink,
+    EgressJsonlSink,
+    ObservedAgent,
+)
+
+__all__ = [
+    "EgressAuditRecord",
+    "EgressAuditSink",
+    "EgressJsonlSink",
+    "EgressProxy",
+    "ObservedAgent",
+]

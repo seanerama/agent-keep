@@ -11,6 +11,7 @@ members = [
     "agent-keep",
     "agent-runtime",
     "keep-build",
+    "keep-egress",
     "keep-spec",
 ]
 
@@ -21,6 +22,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "agent-runtime" },
     { name = "keep-build" },
+    { name = "keep-egress" },
     { name = "keep-spec" },
 ]
 
@@ -37,6 +39,7 @@ dev = [
 requires-dist = [
     { name = "agent-runtime", editable = "packages/agent_runtime" },
     { name = "keep-build", editable = "packages/keep_build" },
+    { name = "keep-egress", editable = "packages/keep_egress" },
     { name = "keep-spec", editable = "packages/keep_spec" },
 ]
 
@@ -208,13 +211,30 @@ version = "0.1.0"
 source = { editable = "packages/keep_build" }
 dependencies = [
     { name = "agent-runtime" },
+    { name = "keep-egress" },
     { name = "keep-spec" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime", editable = "packages/agent_runtime" },
+    { name = "keep-egress", editable = "packages/keep_egress" },
     { name = "keep-spec", editable = "packages/keep_spec" },
+]
+
+[[package]]
+name = "keep-egress"
+version = "0.1.0"
+source = { editable = "packages/keep_egress" }
+dependencies = [
+    { name = "keep-spec" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "keep-spec", editable = "packages/keep_spec" },
+    { name = "pydantic", specifier = ">=2.7,<3" },
 ]
 
 [[package]]
