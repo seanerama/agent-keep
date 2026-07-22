@@ -7,6 +7,7 @@ envelope rules.
 """
 
 from keep_spec.decision_coverage import DECISIONS, Decision, assert_full_coverage
+from keep_spec.egress import egress_entry_allows, match_allowlist
 from keep_spec.models import (
     AgentSpec,
     AllowlistEntry,
@@ -116,8 +117,10 @@ __all__ = [
     "assert_full_coverage",
     "dump_spec_data",
     "dump_spec_yaml",
+    "egress_entry_allows",
     "export_schema",
     "load_spec",
+    "match_allowlist",
     "reference_markdown",
     "validate_spec_data",
 ]
