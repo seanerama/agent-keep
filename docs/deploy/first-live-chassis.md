@@ -30,7 +30,7 @@ Therefore the first live chassis is deployed in **two steps**:
   answer). It does NOT satisfy the real-Anthropic-reply / egress-ALLOW
   conditions.
 - **Step B — go live for real** by building the **anthropic** worker variant
-  (`specs/default-chatbot.live.yaml`, `provider: anthropic`) and redeploying it.
+  (`specs/default-chatbot.anthropic.yaml`, `provider: anthropic`) and redeploying it.
   This is the reviewed spec edit `specs/default-chatbot.yaml` always described.
   It is what makes `smoke-chat` a **real Anthropic reply through the proxy** and
   puts an `egress` **ALLOW** record for `api.anthropic.com:443` in the proxy's
@@ -118,17 +118,15 @@ implemented against the `ModelProvider` seam. The example below uses the
 secret VAR name for another provider, or use a local Ollama with **no secret at
 all**.
 
-### 4a. Build + push the live worker image (on your workstation)
+### 4a. The provider images are already published by CI
 
-```sh
-# Build the live variant (specs/default-chatbot.live.yaml → provider: anthropic;
-# same egress allowlist). For another provider, point at that provider's spec.
-uv run keep-build build specs/default-chatbot.live.yaml \
-  --tag ghcr.io/seanerama/agent-keep-default-chatbot:live
-docker push ghcr.io/seanerama/agent-keep-default-chatbot:live   # ghcr write as seanerama
-```
+CI builds + pushes a worker variant per provider from
+`specs/default-chatbot.<provider>.yaml` — `:anthropic-edge`, `:ollama-edge`,
+`:openai-edge` (each `+ :<provider>-<sha>`). No operator build/push needed; you
+just deploy the tag. (Building your own variant is still possible with
+`keep-build build specs/… --tag …` if you have ghcr write.)
 
-### 4b. Deploy the live tag WITH the secret, in one command
+### 4b. Deploy the provider tag WITH the secret, in one command
 
 `deploy.sh` injects the secret into the env file (root:0600) **before** the
 worker starts — a key-requiring provider crashes at boot otherwise — when you set
@@ -137,22 +135,21 @@ on stdin only (never argv/log), through the scoped helper. Provider-agnostic:
 pipe whatever your provider needs, several vars, or nothing.
 
 ```sh
-# Anthropic example — one command brings the live worker up healthy:
+# Anthropic — one command brings the live worker up healthy:
 printf 'ANTHROPIC_API_KEY=%s\n' "$THE_KEY" | \
   KEEP_DEPLOY_SECRETS=1 \
-  KEEP_SPEC_FILE=specs/default-chatbot.live.yaml \
+  KEEP_SPEC_FILE=specs/default-chatbot.anthropic.yaml \
   DEPLOY_HOST=<ssh-target> \
-  ./deploy.sh default-chatbot live
+  ./deploy.sh default-chatbot anthropic-edge
 
-# OpenAI:  printf 'OPENAI_API_KEY=%s\n' "$KEY" | KEEP_DEPLOY_SECRETS=1 ... ./deploy.sh default-chatbot live
-# Google:  printf 'GOOGLE_API_KEY=%s\n' "$KEY" | KEEP_DEPLOY_SECRETS=1 ... ./deploy.sh default-chatbot live
-# Ollama (local, no cloud egress, no secret): omit KEEP_DEPLOY_SECRETS entirely.
+# OpenAI: printf 'OPENAI_API_KEY=%s\n' "$KEY" | KEEP_DEPLOY_SECRETS=1 KEEP_SPEC_FILE=specs/default-chatbot.openai.yaml ... ./deploy.sh default-chatbot openai-edge
+# Ollama (local, no cloud egress, no secret): KEEP_SPEC_FILE=specs/default-chatbot.ollama.yaml ... ./deploy.sh default-chatbot ollama-edge  (omit KEEP_DEPLOY_SECRETS)
 ```
 
-`KEEP_SPEC_FILE` makes the proxy mount + the mechanic's bundle copy the **live**
-spec (its allowlist is byte-identical to the static one, so the boundary is
-unchanged). `deploy.sh` re-pins to the `:live` digest, injects the secret before
-start, and its liveness gate verifies the worker + proxy came up.
+`KEEP_SPEC_FILE` makes the proxy mount + the mechanic's bundle copy the selected
+provider spec (each keeps its egress scoped to exactly that provider's host).
+`deploy.sh` re-pins to the tag's digest, injects the secret before start, and its
+liveness gate verifies the worker + proxy came up.
 
 > The secret VALUE lives ONLY in `/etc/agent-keep/default-chatbot.env`
 > (root:0600) on the host — never in git, an image, or this file (agent-spec rule

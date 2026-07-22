@@ -17,9 +17,12 @@ Scaffolded by Verity. Nothing deployed yet.
 
 - prefix: `ghcr.io/seanerama/agent-keep`
 - CI publishes `-default-chatbot`, `-mechanic`, `-egress-proxy` at `:edge` +
-  `:<sha>` on push to main (static/generic; no formal release/`:latest` yet).
-- The live worker (`-default-chatbot:live`, `provider: anthropic`) is built +
-  pushed by the Operator at go-live — see the runbook.
+  `:<sha>` on push to main (static/generic; no formal release/`:latest` yet),
+  plus the three provider worker variants at `:anthropic-edge`, `:ollama-edge`,
+  and `:openai-edge` (each from `specs/default-chatbot.<provider>.yaml`).
+- Live-tested providers: `ollama` (real llama3.2 through the proxy, egress ALLOW
+  for `host.docker.internal:11434`). `anthropic` + `openai` are deployable and
+  await an Operator live test with the respective API key — see the runbook.
 
 ## Secrets
 
@@ -37,4 +40,4 @@ Scaffolded by Verity. Nothing deployed yet.
   Operator's gate — exact commands in **`docs/deploy/first-live-chassis.md`**.
 - Go-live is two steps: (A) the published static image proves the pipe + the
   egress DENY path; (B) the Operator builds/pushes the `anthropic` worker variant
-  (`specs/default-chatbot.live.yaml`) for the real Anthropic reply + egress ALLOW.
+  (`specs/default-chatbot.anthropic.yaml`) for the real Anthropic reply + egress ALLOW.
