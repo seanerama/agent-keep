@@ -140,6 +140,31 @@ def test_proxy_is_dual_homed_and_publishes_no_host_port(rendered: str) -> None:
     assert f"docker network connect agent-keep-{SLUG}-egress agent-keep-{SLUG}-proxy" in rendered
 
 
+def test_only_the_proxy_can_resolve_the_docker_host_gateway(rendered: str) -> None:
+    """ADR 0006 (ollama provider): the egress-proxy — and ONLY the proxy — gets
+    `--add-host=host.docker.internal:host-gateway`, so it can resolve the host's
+    local-inference endpoint from its egress leg. The worker gets NO such route
+    (it reaches a local model ONLY through the proxy — the ADR 0002 boundary
+    stays intact); neither do the mechanic or the ingress forwarder."""
+    add_host = "--add-host=host.docker.internal:host-gateway"
+    proxy_run = next(
+        ln
+        for ln in rendered.splitlines()
+        if f"agent-keep-{SLUG}-proxy" in ln and "docker run" in ln
+    )
+    assert add_host in proxy_run, "the proxy must resolve host.docker.internal via the gateway"
+    # every OTHER container run must NOT carry the add-host — the worker above all
+    for name in ("", "-mechanic", "-ingress"):  # "" == the worker (ExecStart)
+        run = next(
+            ln
+            for ln in rendered.splitlines()
+            if "docker run" in ln and f"--name agent-keep-{SLUG}{name} " in ln + " "
+        )
+        assert add_host not in run, (
+            f"agent-keep-{SLUG}{name} must NOT get a route to the docker host"
+        )
+
+
 def test_worker_audit_is_the_single_file_bind_into_the_bundle(rendered: str) -> None:
     """Stage-4 arrangement: the worker's spec audit.path is bound to
     <slug>.audit.jsonl INSIDE the host bundle dir (persisted), and the base
