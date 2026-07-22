@@ -107,57 +107,65 @@ ssh "$DEPLOY_HOST" 'cd /path/to/checkout && \
 (If the repo isn't checked out on the host, `scp scripts/*.sh` there first, or
 run each script's body via `ssh`.) All three must print `SMOKE PASS`.
 
-## 4. Step B — go live for real (anthropic worker)
+## 4. Step B — go live for real (a non-static provider)
 
-This is the step that satisfies the full Stage-5 acceptance (real Anthropic reply
-through the proxy + a live egress ALLOW record). **You need your Anthropic API
-key.**
+This is the step that satisfies the full Stage-5 acceptance (a real model reply
+through the proxy + a live egress ALLOW record). The provider is **your choice** —
+the chassis is agnostic (issue #15). Today the built provider adapters are
+`static` (CI) and `anthropic`; more (OpenAI, Google, Ollama) land as they are
+implemented against the `ModelProvider` seam. The example below uses the
+`anthropic` variant, so **you need an Anthropic API key**; swap the spec + the
+secret VAR name for another provider, or use a local Ollama with **no secret at
+all**.
 
 ### 4a. Build + push the live worker image (on your workstation)
 
 ```sh
-# Build the anthropic variant (provider: anthropic; same egress allowlist).
+# Build the live variant (specs/default-chatbot.live.yaml → provider: anthropic;
+# same egress allowlist). For another provider, point at that provider's spec.
 uv run keep-build build specs/default-chatbot.live.yaml \
   --tag ghcr.io/seanerama/agent-keep-default-chatbot:live
-
-# Push it (you have ghcr write as seanerama; login first if needed):
-docker push ghcr.io/seanerama/agent-keep-default-chatbot:live
+docker push ghcr.io/seanerama/agent-keep-default-chatbot:live   # ghcr write as seanerama
 ```
 
-### 4b. Deploy the live tag
+### 4b. Deploy the live tag WITH the secret, in one command
+
+`deploy.sh` injects the secret into the env file (root:0600) **before** the
+worker starts — a key-requiring provider crashes at boot otherwise — when you set
+`KEEP_DEPLOY_SECRETS=1` and pipe `VAR=value` line(s) on stdin. The value travels
+on stdin only (never argv/log), through the scoped helper. Provider-agnostic:
+pipe whatever your provider needs, several vars, or nothing.
 
 ```sh
-DEPLOY_HOST=<ssh-target> \
+# Anthropic example — one command brings the live worker up healthy:
+printf 'ANTHROPIC_API_KEY=%s\n' "$THE_KEY" | \
+  KEEP_DEPLOY_SECRETS=1 \
   KEEP_SPEC_FILE=specs/default-chatbot.live.yaml \
+  DEPLOY_HOST=<ssh-target> \
   ./deploy.sh default-chatbot live
+
+# OpenAI:  printf 'OPENAI_API_KEY=%s\n' "$KEY" | KEEP_DEPLOY_SECRETS=1 ... ./deploy.sh default-chatbot live
+# Google:  printf 'GOOGLE_API_KEY=%s\n' "$KEY" | KEEP_DEPLOY_SECRETS=1 ... ./deploy.sh default-chatbot live
+# Ollama (local, no cloud egress, no secret): omit KEEP_DEPLOY_SECRETS entirely.
 ```
 
 `KEEP_SPEC_FILE` makes the proxy mount + the mechanic's bundle copy the **live**
 spec (its allowlist is byte-identical to the static one, so the boundary is
-unchanged). `deploy.sh` re-pins to the `:live` digest.
+unchanged). `deploy.sh` re-pins to the `:live` digest, injects the secret before
+start, and its liveness gate verifies the worker + proxy came up.
 
-### 4c. Append the Anthropic key on the host (the ONE secret VALUE)
-
-`deploy.sh` never writes secrets. Append the key to the same root:0600 env file,
-then restart so the worker picks it up:
-
-```sh
-# The key VALUE arrives on stdin (never on argv / the process list). The helper
-# appends it to the same root:0600 env file, keeping a backup.
-printf 'ANTHROPIC_API_KEY=%s\n' "$THE_KEY" | \
-  ssh "$DEPLOY_HOST" 'sudo -n /usr/local/sbin/agent-keep-deploy append-env default-chatbot'
-ssh "$DEPLOY_HOST" 'sudo -n /usr/local/sbin/agent-keep-deploy service default-chatbot restart'
-```
-
-> The key VALUE lives ONLY in `/etc/agent-keep/default-chatbot.env` (root:0600) on
-> the host — never in git, never in an image, never in this file (agent-spec rule
-> 3). Confirm perms: `ssh "$DEPLOY_HOST" 'sudo stat -c "%a %U:%G"
+> The secret VALUE lives ONLY in `/etc/agent-keep/default-chatbot.env`
+> (root:0600) on the host — never in git, an image, or this file (agent-spec rule
+> 3). `write-env` overwrites on each deploy, so **re-supply the secret on every
+> redeploy** (explicit provenance; nothing secret persists in the tracked flow).
+> Confirm perms: `ssh "$DEPLOY_HOST" 'sudo stat -c "%a %U:%G"
 > /etc/agent-keep/default-chatbot.env'` must print `600 root:root`.
 
-### 4d. Live smokes for Step B (the real acceptance)
+### 4c. Live smokes for Step B (the real acceptance)
 
-Re-run the three smokes from step 3. Now `smoke-chat` returns a **real Anthropic
-reply** (not the scripted static line), routed **through the proxy**.
+Re-run the three smokes from step 3. Now `smoke-chat` returns a **real model
+reply** (not the scripted static line), routed **through the proxy**, with an
+egress ALLOW record for the provider's host.
 
 ## 5. Acceptance checklist (the Stage-5 gate)
 
