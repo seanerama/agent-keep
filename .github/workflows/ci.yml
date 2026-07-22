@@ -134,6 +134,12 @@ jobs:
           uv run keep-build build specs/mechanic.yaml
       - name: Build egress-proxy image
         run: uv run keep-build build-proxy
+      - name: Build the anthropic worker variant (issue #15)
+        # Cloud provider variant of the same slug — explicit tag so it does not
+        # clobber the static :latest; published as :anthropic-edge below.
+        run: |
+          uv run keep-build build specs/default-chatbot.anthropic.yaml \
+            --tag ghcr.io/seanerama/agent-keep-default-chatbot:anthropic-build
       - name: Build the ollama worker variant (ADR 0006, issue #15)
         # The ollama spec shares the `default-chatbot` slug, so build it with an
         # explicit tag to avoid clobbering the static :latest built above. It is
@@ -167,6 +173,13 @@ jobs:
             docker push "$IMG:edge"
             docker push "$IMG:${GITHUB_SHA}"
           done
+          # The anthropic worker variant: moving :anthropic-edge + immutable
+          # :anthropic-${GITHUB_SHA} on the SAME repo (never :latest).
+          ANTHROPIC_IMG=ghcr.io/seanerama/agent-keep-default-chatbot
+          docker tag "$ANTHROPIC_IMG:anthropic-build" "$ANTHROPIC_IMG:anthropic-edge"
+          docker tag "$ANTHROPIC_IMG:anthropic-build" "$ANTHROPIC_IMG:anthropic-${GITHUB_SHA}"
+          docker push "$ANTHROPIC_IMG:anthropic-edge"
+          docker push "$ANTHROPIC_IMG:anthropic-${GITHUB_SHA}"
           # The ollama worker variant: moving :ollama-edge + immutable
           # :ollama-${GITHUB_SHA} on the SAME repo (never :latest).
           OLLAMA_IMG=ghcr.io/seanerama/agent-keep-default-chatbot
