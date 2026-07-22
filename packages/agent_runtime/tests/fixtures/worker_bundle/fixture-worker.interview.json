@@ -1,0 +1,30 @@
+{
+  "schema": "foundry/interview-transcript@1",
+  "transcript_id": "11111111-1111-4111-8111-111111111111",
+  "created_at": "2026-07-01T00:00:00+00:00",
+  "engine_version": "0.1.0",
+  "spec": {
+    "slug": "fixture-worker",
+    "spec_version": "0.2.0"
+  },
+  "entries": [
+    {
+      "decision_id": "sessions.history",
+      "question": "How do you fit history into the context window?",
+      "options": ["sliding-window", "summarization", "retrieval", "layered"],
+      "considerations": "Pull only incident-relevant past turns into context.",
+      "answer": "retrieval",
+      "spec_path": "spec.sessions.history.topK",
+      "answered_at": "2026-07-01T00:00:01+00:00"
+    },
+    {
+      "decision_id": "approval.page_room",
+      "question": "Should paging the NOC room be auto-approved?",
+      "options": ["auto-approve", "confirm each time"],
+      "considerations": "A 03:00 alarm cannot wait for a human to approve waking a human; paging is the agent's purpose.",
+      "answer": "paging.page_room",
+      "spec_path": "spec.approval.autoApprove.0",
+      "answered_at": "2026-07-01T00:00:02+00:00"
+    }
+  ]
+}

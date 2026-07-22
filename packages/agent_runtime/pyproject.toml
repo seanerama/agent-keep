@@ -1,0 +1,23 @@
+[project]
+name = "agent-runtime"
+version = "0.1.0"
+description = "Agent Keep runtime component library — channel adapters, queue, sessions, prompt assembly, providers, audit"
+requires-python = ">=3.12"
+dependencies = [
+    "keep-spec",
+    "pydantic>=2.7,<3",
+    # anthropic_provider component (stage 9): hand-rolled adapter, ADR 0003
+    # factory decision 3 — httpx, no vendor SDK. Pinned exactly into images
+    # by the composer (COMPONENT_DEPENDENCIES + dockerfile pin).
+    "httpx>=0.27,<1",
+]
+
+[tool.uv.sources]
+keep-spec = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_runtime"]
