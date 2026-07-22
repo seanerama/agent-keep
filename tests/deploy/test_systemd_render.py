@@ -223,12 +223,15 @@ def test_only_the_forwarder_publishes_host_ports(rendered: str) -> None:
         assert " -p " not in run, f"agent-keep-{SLUG}{name} must not publish a host port"
 
 
-def test_anthropic_key_is_passthrough_not_a_baked_value(rendered: str) -> None:
-    """The secret is passed with the `-e VAR` (no value) form: docker hands it
-    in ONLY when the host env file sets it — never a literal in the unit."""
-    execstart = " ".join(_exec_lines(rendered, "ExecStart=/usr/bin/docker run"))
-    assert "-e ANTHROPIC_API_KEY " in execstart + " "
-    assert "ANTHROPIC_API_KEY=" not in execstart  # no value ever in the unit
+def test_provider_key_env_is_passthrough_not_a_baked_value(rendered: str) -> None:
+    """Each provider's key is passed with the `-e VAR` (no value) form: docker
+    hands one in ONLY when the host env file sets it — never a literal in the
+    unit. All known cloud provider key vars are forwarded so the worker is
+    provider-agnostic (issue #23); an unset one is simply omitted by docker."""
+    execstart = " ".join(_exec_lines(rendered, "ExecStart=/usr/bin/docker run")) + " "
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+        assert f"-e {var} " in execstart  # passthrough form present
+        assert f"{var}=" not in execstart  # no value ever in the unit
 
 
 def test_stop_tears_down_the_whole_trio_and_both_networks(rendered: str) -> None:

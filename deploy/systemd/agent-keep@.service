@@ -153,9 +153,12 @@ ExecStartPre=/usr/bin/docker network connect agent-keep-%i-net agent-keep-%i-ing
 # --internal net ONLY (no route out) + HTTP(S)_PROXY -> the paired proxy. The
 # audit is the single-file bind INTO the host bundle dir (persisted); sqlite
 # sessions ride an ephemeral /tmp tmpfs (the audit is what must persist, not the
-# dev session store). ANTHROPIC_API_KEY is passed with the `-e VAR` (no value)
-# form: docker hands it in ONLY when the env file sets it (unset for the static
-# image, set for the live anthropic variant — see docs/deploy/first-live-chassis.md).
+# dev session store). Each provider's API key env var is passed with the `-e VAR`
+# (no value) form: docker hands one in ONLY when the env file sets it — unset for
+# the static/ollama image, set for whichever cloud provider is deployed (the key
+# is injected by KEEP_DEPLOY_SECRETS at deploy time, issue #13/#23). All known
+# cloud provider key vars are listed so the worker is provider-agnostic; an unset
+# one is simply omitted by docker (no empty-string crash — cf issue #13).
 # OPS-01 hardening VERBATIM; the base set's /var/lib/agent-keep tmpfs is dropped
 # (the bundle bind persists the audit — Stage-4 drop_keep_tmpfs).
 ExecStart=/usr/bin/docker run --rm --name agent-keep-%i \
@@ -169,6 +172,8 @@ ExecStart=/usr/bin/docker run --rm --name agent-keep-%i \
     -e AGENT_IMAGE_DIGEST=${WORKER_IMAGE_DIGEST} \
     -e SQLITE_PATH=${SQLITE_PATH} \
     -e ANTHROPIC_API_KEY \
+    -e OPENAI_API_KEY \
+    -e GOOGLE_API_KEY \
     --security-opt no-new-privileges \
     --cap-drop ALL \
     --read-only \
