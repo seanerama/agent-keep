@@ -100,8 +100,10 @@ jobs:
       - name: Container integration test
         run: uv run pytest -m container
   publish-image:
-    # Push the default-chatbot image to ghcr on main only, after every gate is
-    # green. Publishes :edge (moving, latest-main) + :${GITHUB_SHA} (immutable).
+    # Push the default-chatbot AND mechanic images to ghcr on main only, after
+    # every gate is green (stage 4: the paired mechanic is a second stamped
+    # spec from the SAME runtime — ADR 0001 — so it rides the same publish).
+    # Publishes :edge (moving, latest-main) + :${GITHUB_SHA} (immutable).
     # Never moves :latest — that is reserved for formal releases, so :latest
     # always points at a tagged, reviewed release. Dark-launch by design: a
     # published image nobody runs is the chassis "off" state (no kill-switch
@@ -121,8 +123,10 @@ jobs:
         run: uv sync --locked
       - name: Log in to ghcr
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Build image from the baked spec
-        run: uv run keep-build build specs/default-chatbot.yaml
+      - name: Build images from the baked specs
+        run: |
+          uv run keep-build build specs/default-chatbot.yaml
+          uv run keep-build build specs/mechanic.yaml
       - name: Build egress-proxy image
         run: uv run keep-build build-proxy
       - name: Tag and push (edge + immutable SHA; latest is release-only)
@@ -133,6 +137,7 @@ jobs:
           # :latest from main — latest tracks formal releases, not
           # unreleased main.
           for IMG in ghcr.io/seanerama/agent-keep-default-chatbot \
+                     ghcr.io/seanerama/agent-keep-mechanic \
                      ghcr.io/seanerama/agent-keep-egress-proxy; do
             docker tag "$IMG:latest" "$IMG:edge"
             docker tag "$IMG:latest" "$IMG:${GITHUB_SHA}"
