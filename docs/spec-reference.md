@@ -356,9 +356,10 @@ One allowed tool on an MCP server (blueprint `capabilities/mcpmgr`: 'tool availa
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `provider` | one of: `static`, `anthropic` | yes | — | Default provider when no tier routing applies (blueprint model/llmrouter). |
+| `provider` | one of: `static`, `anthropic`, `ollama` | yes | — | Default provider when no tier routing applies (blueprint model/llmrouter). |
 | `static` | [StaticProviderConfig](#staticproviderconfig) or null | no | `null` | Static provider config; required iff provider is 'static'. |
 | `anthropic` | [AnthropicProviderConfig](#anthropicproviderconfig) or null | no | `null` | Anthropic provider config; required iff provider is 'anthropic'. |
+| `ollama` | [OllamaProviderConfig](#ollamaproviderconfig) or null | no | `null` | Ollama provider config; required iff provider is 'ollama'. |
 | `tiers` | list of [ModelTier](#modeltier) | no | `[]` | Routing tiers by task type (blueprint model/llmrouter: cheap model for triage, flagship for reasoning). Empty = single default provider. |
 | `budgets` | [ModelBudgets](#modelbudgets) or null | no | `null` | Per-session cost control (blueprint model/llmrouter); None = no budgets. |
 
@@ -390,6 +391,17 @@ Operator-declared token pricing for one model path (blueprint `model/llmrouter`,
 | `usdPerMillionInputTokens` | float or null | no | `null` | USD charged per 1,000,000 input (prompt) tokens for this model path. (gt: `0`) |
 | `usdPerMillionOutputTokens` | float or null | no | `null` | USD charged per 1,000,000 output (completion) tokens for this model path. (gt: `0`) |
 
+## OllamaProviderConfig
+
+Configuration for the `ollama` model provider (ADR 0006 — local inference reached THROUGH the audited egress proxy, no API key). The worker's Ollama base host is `host.docker.internal:11434` by default: the host's Ollama server, reached over the docker gateway via the egress proxy (the worker never routes there directly). No `apiKeyEnv` — Ollama takes no key. `pricing` is usually omitted (local compute has no per-token USD cost in the cloud-API sense); token COUNTS still record. v1 additive amendment, stage 8 (issue #15 first cut).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `model` | str | yes | — | Ollama model name, e.g. 'llama3.2:latest'. (min_length: `1`) |
+| `baseHost` | str | no | `"host.docker.internal:11434"` | Ollama server host[:port] the worker reaches THROUGH the egress proxy (cross-validated against sandbox.egress). Same host[:port] grammar as sandbox.egress; default 'host.docker.internal:11434' (the host's Ollama over the docker gateway — ADR 0006). |
+| `maxTokens` | int or null | no | `null` | Max output tokens per model call (Ollama options.num_predict); None = the adapter default (Ollama's own num_predict default). Ceiling 128000 matches the anthropic config's convention. (ge: `1`; le: `128000`) |
+| `pricing` | [Pricing](#pricing) or null | no | `null` | Operator-declared token pricing for this model path; required on every selectable path iff budgets.maxUsdPerSession is set (cross-validated). Usually omitted for ollama (local compute). None = no pricing declared. |
+
 ## ModelTier
 
 One routing tier (blueprint `model/llmrouter`, decisions 'Route by task' and 'Where does cost control live?', option 'Tiered routing by task type').
@@ -397,9 +409,10 @@ One routing tier (blueprint `model/llmrouter`, decisions 'Route by task' and 'Wh
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | str | yes | — | Tier name, e.g. 'triage' or 'reasoning'. (pattern: `^[a-z0-9]+(-[a-z0-9]+)*$`) |
-| `provider` | one of: `static`, `anthropic` | yes | — | Provider for this tier (blueprint model/llmrouter). |
+| `provider` | one of: `static`, `anthropic`, `ollama` | yes | — | Provider for this tier (blueprint model/llmrouter). |
 | `static` | [StaticProviderConfig](#staticproviderconfig) or null | no | `null` | Static provider config; required iff provider is 'static'. |
 | `anthropic` | [AnthropicProviderConfig](#anthropicproviderconfig) or null | no | `null` | Anthropic provider config; required iff provider is 'anthropic'. |
+| `ollama` | [OllamaProviderConfig](#ollamaproviderconfig) or null | no | `null` | Ollama provider config; required iff provider is 'ollama'. |
 
 ## ModelBudgets
 

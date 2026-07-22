@@ -454,6 +454,86 @@ def test_client_tracking_is_fully_buildable() -> None:
     assert "model-router" in select_components(spec)
 
 
+# ------------------------------------------------------ ollama provider (stage 8)
+
+
+def _ollama_models(base_host: str = "host.docker.internal:11434") -> dict[str, Any]:
+    return {
+        "provider": "ollama",
+        "ollama": {"model": "llama3.2:latest", "baseHost": base_host},
+    }
+
+
+def test_ollama_provider_is_buildable_and_ships_its_module(
+    skeleton_data: dict[str, Any],
+) -> None:
+    """A spec selecting `ollama` builds (the adapter exists) and the
+    ollama_provider module ships — the anthropic/static provider pattern."""
+    from agent_runtime.wiring import component_module_names
+
+    skeleton_data["spec"]["models"] = _ollama_models()
+    skeleton_data["spec"]["sandbox"]["egress"] = ["host.docker.internal:11434"]
+    spec = validate_spec_data(skeleton_data)
+    assert unimplemented_selections(spec) == []
+    ensure_buildable(spec)  # must not raise
+    modules = component_module_names(spec)
+    assert "ollama_provider" in modules
+    # absence: the other providers are NOT in a ollama-only image
+    assert "anthropic_provider" not in modules
+    assert "static_provider" not in modules
+
+
+def test_ollama_without_base_host_in_egress_fails_cross_validation(
+    skeleton_data: dict[str, Any],
+) -> None:
+    """ADR 0006: the ollama baseHost — read from the CONFIG, not a constant —
+    must be covered by sandbox.egress, or the model call is unreachable by
+    construction (the anthropic cross-check pattern, host from the spec)."""
+    skeleton_data["spec"]["models"] = _ollama_models()
+    skeleton_data["spec"]["sandbox"]["egress"] = []  # baseHost NOT allowlisted
+    spec = validate_spec_data(skeleton_data)
+    assert unimplemented_selections(spec) == []  # the component gap is GONE...
+    [violation] = egress_violations(spec)  # ...but the spec is inconsistent
+    assert "host.docker.internal:11434" in violation
+    assert "sandbox.egress" in violation
+    with pytest.raises(EgressCrossValidationError, match="host.docker.internal:11434"):
+        ensure_buildable(spec)
+
+
+def test_ollama_wrong_port_in_egress_fails_cross_validation(
+    skeleton_data: dict[str, Any],
+) -> None:
+    """The port matters: a baseHost of :11434 is not covered by an egress entry
+    pinned to a different port."""
+    skeleton_data["spec"]["models"] = _ollama_models()
+    skeleton_data["spec"]["sandbox"]["egress"] = ["host.docker.internal:1234"]
+    spec = validate_spec_data(skeleton_data)
+    assert egress_violations(spec) != []
+    with pytest.raises(EgressCrossValidationError):
+        ensure_buildable(spec)
+
+
+def test_ollama_with_base_host_in_egress_is_consistent(
+    skeleton_data: dict[str, Any],
+) -> None:
+    skeleton_data["spec"]["models"] = _ollama_models()
+    skeleton_data["spec"]["sandbox"]["egress"] = ["host.docker.internal:11434"]
+    spec = validate_spec_data(skeleton_data)
+    assert egress_violations(spec) == []
+    ensure_buildable(spec)  # must not raise
+
+
+def test_ollama_default_port_covered_by_portless_egress_entry(
+    skeleton_data: dict[str, Any],
+) -> None:
+    """A portless egress entry covers the baseHost's :11434 (the anthropic
+    portless-entry rule); the default-port host is reachable."""
+    skeleton_data["spec"]["models"] = _ollama_models()
+    skeleton_data["spec"]["sandbox"]["egress"] = ["host.docker.internal"]
+    spec = validate_spec_data(skeleton_data)
+    assert egress_violations(spec) == []
+
+
 def _sessions_variant(
     skeleton_data: dict[str, Any],
     *,

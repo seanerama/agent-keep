@@ -92,8 +92,13 @@ ExecStartPre=/usr/bin/docker pull ${MECHANIC_IMAGE_REF}
 # read-only, own audit on a named volume (so the live ALLOW/DENY records survive
 # & are inspectable). OPS-01 hardening VERBATIM. No host port. The base hardened
 # set's /var/lib/agent-keep tmpfs is REPLACED here by the named audit volume.
+# --add-host=host.docker.internal:host-gateway (ADR 0006): the ONLY container
+# that gets it — lets the proxy resolve the host's Ollama endpoint from its
+# egress leg for the local-inference provider. The worker gets NO such route
+# (it reaches Ollama ONLY through this proxy — the ADR 0002 boundary is intact).
 ExecStartPre=/usr/bin/docker run -d --name agent-keep-%i-proxy \
     --network agent-keep-%i-net --network-alias egress-proxy \
+    --add-host=host.docker.internal:host-gateway \
     -e KEEP_EGRESS_HOST \
     -e KEEP_EGRESS_PORT \
     --security-opt no-new-privileges \

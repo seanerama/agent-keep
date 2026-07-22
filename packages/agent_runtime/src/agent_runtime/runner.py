@@ -35,6 +35,7 @@ from keep_spec import AgentSpec, DevHttpChannel, SlackChannel, WebexChannel, loa
 from keep_spec.models import (
     AnthropicProviderConfig,
     FactsMemory,
+    OllamaProviderConfig,
     RetrievalHistory,
     SlidingWindowHistory,
     StaticProviderConfig,
@@ -95,20 +96,33 @@ def _build_provider(
     provider: str,
     static: "StaticProviderConfig | None",
     anthropic: "AnthropicProviderConfig | None",
+    ollama: "OllamaProviderConfig | None",
 ) -> ModelProvider:
     """One provider instance from a (provider, config) pair — default or tier.
 
     The anthropic constructor reads the API key from the env var the SPEC
     names (apiKeyEnv); a missing key is a loud boot failure naming that var —
-    never a lazily-failing half-booted agent.
+    never a lazily-failing half-booted agent. The ollama adapter (ADR 0006)
+    takes NO key: it reaches the spec-declared baseHost (built into an
+    `http://<baseHost>` base URL) THROUGH the egress proxy.
 
     `maxTokens` (v1 additive amendment, stage 13) is forwarded only when the
-    spec sets it — an absent field keeps the adapter's own default (4096), so
-    every pre-amendment spec behaves exactly as before.
+    spec sets it — an absent field keeps the adapter's own default, so every
+    pre-amendment spec behaves exactly as before.
     """
     if provider == "static":
         assert static is not None  # ensure_buildable + schema admit no other shape
         built: ModelProvider = load_component("static-provider").StaticProvider(static.script)
+        return built
+    if provider == "ollama":
+        assert ollama is not None  # provider == "ollama" (schema-validated)
+        ollama_kwargs: dict[str, Any] = {
+            "model": ollama.model,
+            "base_url": f"http://{ollama.baseHost}",
+        }
+        if ollama.maxTokens is not None:
+            ollama_kwargs["max_tokens"] = ollama.maxTokens
+        built = load_component("ollama-provider").OllamaProvider(**ollama_kwargs)
         return built
     assert anthropic is not None  # provider == "anthropic" (schema-validated)
     kwargs: dict[str, Any] = {"model": anthropic.model, "api_key_env": anthropic.apiKeyEnv}
@@ -230,20 +244,22 @@ def build_app(spec: AgentSpec) -> tuple[AgentCore, Any]:
         )
     assembler = load_component("prompt-assembler").PromptAssembler(window_turns=window_turns)
     models = spec.spec.models
-    provider = _build_provider(models.provider, models.static, models.anthropic)
+    provider = _build_provider(models.provider, models.static, models.anthropic, models.ollama)
     router: ModelRouterProtocol | None = None
     if models.tiers or models.budgets is not None:
         tier_providers = {
-            tier.name: _build_provider(tier.provider, tier.static, tier.anthropic)
+            tier.name: _build_provider(tier.provider, tier.static, tier.anthropic, tier.ollama)
             for tier in models.tiers
         }
         budgets = models.budgets
         router_module = load_component("model-router")
 
-        def _price(config: AnthropicProviderConfig | None) -> Any:
+        def _price(config: "AnthropicProviderConfig | OllamaProviderConfig | None") -> Any:
             # Operator-declared pricing -> the router's rate object (stage 25).
             # Cross-validation guarantees pricing is present on every path when
-            # a USD budget is set, so unpriced here means no USD budget.
+            # a USD budget is set, so unpriced here means no USD budget. Both the
+            # anthropic and ollama configs carry an optional `pricing` block
+            # (ollama usually omits it — local compute, ADR 0006).
             if config is None or config.pricing is None:
                 return None
             return router_module.ModelPrice(
@@ -251,14 +267,29 @@ def build_app(spec: AgentSpec) -> tuple[AgentCore, Any]:
                 usd_per_million_output=config.pricing.usdPerMillionOutputTokens,
             )
 
+        def _path_price(
+            provider_name: str,
+            anthropic: "AnthropicProviderConfig | None",
+            ollama: "OllamaProviderConfig | None",
+        ) -> Any:
+            # The priced config for a selectable path is the SELECTED provider's
+            # config (static has no priceable cost — schema refuses a USD budget
+            # over it, so it is never priced here).
+            if provider_name == "ollama":
+                return _price(ollama)
+            return _price(anthropic)
+
         router = router_module.ModelRouter(
             default=provider,
             tiers=tier_providers,
             max_tokens_per_session=budgets.maxTokensPerSession if budgets else None,
             max_usd_per_session=budgets.maxUsdPerSession if budgets else None,
             on_exceed=budgets.onExceed if budgets else "block",
-            default_price=_price(models.anthropic),
-            tier_prices={tier.name: _price(tier.anthropic) for tier in models.tiers},
+            default_price=_path_price(models.provider, models.anthropic, models.ollama),
+            tier_prices={
+                tier.name: _path_price(tier.provider, tier.anthropic, tier.ollama)
+                for tier in models.tiers
+            },
         )
     audit_sink = load_component("jsonl-audit").JsonlAuditSink(spec.spec.observability.audit.path)
 

@@ -81,6 +81,8 @@ RUNTIME_DEPENDENCIES = ("pydantic", "pyyaml")
 #: client). Only components the transplant carried are listed.
 COMPONENT_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "anthropic-provider": ("httpx",),
+    # The ollama adapter is hand-rolled on httpx too (ADR 0006, no SDK, no key).
+    "ollama-provider": ("httpx",),
 }
 
 #: Extra components/ modules a selected component imports at MODULE scope and

@@ -20,6 +20,7 @@ from keep_spec import (
     AgentSpec,
     EventTrigger,
     HttpTransport,
+    OllamaProviderConfig,
     ScheduleTrigger,
     SlackChannel,
     WebexChannel,
@@ -72,6 +73,7 @@ COMPONENT_REGISTRY: dict[str, str] = {
     "prompt-assembler": "prompt_assembler",
     "static-provider": "static_provider",
     "anthropic-provider": "anthropic_provider",
+    "ollama-provider": "ollama_provider",
     "model-router": "model_router",
     "jsonl-audit": "jsonl_audit",
     "local-tools": "local_tools",
@@ -113,7 +115,11 @@ _BUILDABLE_SESSION_DEFINITIONS = frozenset({"per-channel", "per-user"})
 #: 15/20, so it deliberately carries NO tier constraint and ships NO extra
 #: component). 'summarization'/'layered' have no component and stay guarded.
 _BUILDABLE_HISTORY_STRATEGIES = frozenset({"retrieval", "sliding-window"})
-_PROVIDER_COMPONENTS = {"static": "static-provider", "anthropic": "anthropic-provider"}
+_PROVIDER_COMPONENTS = {
+    "static": "static-provider",
+    "anthropic": "anthropic-provider",
+    "ollama": "ollama-provider",
+}
 _AUDIT_COMPONENTS = {"jsonl": "jsonl-audit"}
 #: Persistence tiers this library can build. 'postgres' (stage 15) is the
 #: real-database session manager; 'sqlite' (stage 20) is the real FILE-backed
@@ -489,6 +495,53 @@ def _provider_egress_targets(spec: AgentSpec) -> list[_EgressTarget]:
     ]
 
 
+#: Default Ollama port when a baseHost omits `:port` (matches
+#: components.ollama_provider.DEFAULT_BASE_URL).
+OLLAMA_DEFAULT_PORT = 11434
+
+
+def _ollama_egress_targets(spec: AgentSpec) -> list[_EgressTarget]:
+    """The Ollama server host:port for every spec site selecting `ollama`.
+
+    Unlike the anthropic provider (a constant, module-known host), the ollama
+    endpoint is spec-declared: the host comes from the SELECTED ollama config's
+    ``baseHost`` (top-level or per-tier — ADR 0006), so a spec selecting ollama
+    must allowlist exactly that host:port in sandbox.egress. One target per
+    selecting site (each may carry a different baseHost)."""
+    models = spec.spec.models
+    sites: list[tuple[str, OllamaProviderConfig | None]] = [
+        ("spec.models.provider", models.ollama if models.provider == "ollama" else None)
+    ]
+    sites += [
+        (f"spec.models.tiers['{tier.name}']", tier.ollama)
+        for tier in models.tiers
+        if tier.provider == "ollama"
+    ]
+    targets: list[_EgressTarget] = []
+    for site, config in sites:
+        if config is None:
+            # Schema cross-validation guarantees a config on a selecting site;
+            # nothing to allowlist without one.
+            continue
+        base_host, _, port_text = config.baseHost.rpartition(":")
+        if base_host:
+            host, port = base_host.lower(), int(port_text)
+        else:
+            host, port = config.baseHost.lower(), OLLAMA_DEFAULT_PORT
+        targets.append(
+            _EgressTarget(
+                host=host,
+                port=port,
+                violation=(
+                    f"ollama provider host '{host}:{port}' is not covered by "
+                    f"sandbox.egress — add '{config.baseHost}' or the Ollama server is "
+                    f"unreachable by construction ({site}.ollama.baseHost)"
+                ),
+            )
+        )
+    return targets
+
+
 def _violations_for(targets: list[_EgressTarget], egress: list[str]) -> list[str]:
     return [
         target.violation
@@ -520,7 +573,10 @@ def egress_violations(spec: AgentSpec) -> list[str]:
     docs/security-review-walkthrough.md). Empty list = consistent.
     """
     targets = (
-        _mcp_egress_targets(spec) + _channel_egress_targets(spec) + _provider_egress_targets(spec)
+        _mcp_egress_targets(spec)
+        + _channel_egress_targets(spec)
+        + _provider_egress_targets(spec)
+        + _ollama_egress_targets(spec)
     )
     return _violations_for(targets, spec.spec.sandbox.egress)
 
