@@ -769,12 +769,25 @@
           "default": null,
           "description": "Ollama provider config; required iff provider is 'ollama'."
         },
+        "openai": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpenAIProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "OpenAI provider config; required iff provider is 'openai'."
+        },
         "provider": {
           "description": "Provider for this tier (blueprint model/llmrouter).",
           "enum": [
             "static",
             "anthropic",
-            "ollama"
+            "ollama",
+            "openai"
           ],
           "title": "Provider",
           "type": "string"
@@ -839,12 +852,25 @@
           "default": null,
           "description": "Ollama provider config; required iff provider is 'ollama'."
         },
+        "openai": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpenAIProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "OpenAI provider config; required iff provider is 'openai'."
+        },
         "provider": {
           "description": "Default provider when no tier routing applies (blueprint model/llmrouter).",
           "enum": [
             "static",
             "anthropic",
-            "ollama"
+            "ollama",
+            "openai"
           ],
           "title": "Provider",
           "type": "string"
@@ -963,6 +989,63 @@
         "model"
       ],
       "title": "OllamaProviderConfig",
+      "type": "object"
+    },
+    "OpenAIProviderConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for the `openai` model provider (issue #15 \u2014 the second\nprovider-agnostic adapter, the anthropic-shaped CLOUD variant of the\nstage-8 ollama pattern).\n\nA cloud provider like `anthropic`: it needs an API key and egress to\n`api.openai.com`. Unlike the ollama config it names an `apiKeyEnv` (the\nkey VALUE is never in the spec \u2014 contract rule 3); like the ollama config\nits `baseHost` is configurable (so OpenAI-compatible endpoints work and the\negress cross-check reads the host from the CONFIG, not a constant). The\nworker builds `https://<baseHost>` and reaches it THROUGH the audited\negress proxy, exactly like the anthropic path. v1 additive amendment,\nstage 10 (issue #15 second cut).",
+      "properties": {
+        "apiKeyEnv": {
+          "default": "OPENAI_API_KEY",
+          "description": "Env var NAME holding the API key (never the value \u2014 contract rule 3).",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "title": "Apikeyenv",
+          "type": "string"
+        },
+        "baseHost": {
+          "default": "api.openai.com:443",
+          "description": "OpenAI API host[:port] the worker reaches THROUGH the egress proxy (cross-validated against sandbox.egress). Same host[:port] grammar as sandbox.egress; default 'api.openai.com:443' (the public OpenAI API). Configurable so OpenAI-compatible endpoints work.",
+          "title": "Basehost",
+          "type": "string"
+        },
+        "maxTokens": {
+          "anyOf": [
+            {
+              "maximum": 128000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max output tokens per model call (Chat Completions max_tokens); None = the adapter default (the API's own default). Ceiling 128000 matches the anthropic/ollama config convention.",
+          "title": "Maxtokens"
+        },
+        "model": {
+          "description": "OpenAI model name, e.g. 'gpt-4o-mini'.",
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pricing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Operator-declared token pricing for this model path; required on every selectable path iff budgets.maxUsdPerSession is set (cross-validated). None = no pricing declared."
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OpenAIProviderConfig",
       "type": "object"
     },
     "Persistence": {
