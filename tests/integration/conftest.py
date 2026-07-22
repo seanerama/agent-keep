@@ -44,9 +44,10 @@ def sqlite_env() -> tuple[str, str]:
 #:                                     /tmp), plus any sqlite temp spill.
 #:   --tmpfs /var/lib/agent-keep:mode=1777
 #:                                     the audit sink appends audit.jsonl here.
-#: mode=1777 is pinned explicitly as defensive documentation of the required
-#: posture (docker's tmpfs default already provides it). In production the
-#: audit dir is instead a persistent named volume.
+#: mode=1777 is LOAD-BEARING, not decorative: a bare --tmpfs mounts root:root
+#: drwxr-xr-x, and the uid-10001 runner then fails to append audit.jsonl
+#: (PermissionError surfacing as 500 on /message). Do not remove. In production
+#: the audit dir is instead a persistent named volume.
 HARDENED_RUN_FLAGS: tuple[str, ...] = (
     "--security-opt",
     "no-new-privileges",
