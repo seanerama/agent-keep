@@ -16,6 +16,7 @@ Env configuration (defaults in parentheses):
 import asyncio
 import os
 import sys
+from typing import NamedTuple
 
 from pydantic import ValidationError
 
@@ -29,16 +30,46 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 3128
 
 
+class _Config(NamedTuple):
+    spec_path: str
+    audit_path: str
+    host: str
+    port: int
+
+
+def _env_or_default(key: str, default: str) -> str:
+    """Read env var `key`, treating PRESENT-BUT-EMPTY as absent (issue #13).
+
+    `os.environ.get(key, default)` only falls back when the key is ABSENT; the
+    deploy env-passthrough (`deploy.sh` writes `KEEP_EGRESS_PORT=` and the unit
+    passes bare `-e KEEP_EGRESS_PORT`) hands docker a present-but-empty value, so
+    `.get` returns `''` and `int('')` crashed the proxy at boot. Fall back to the
+    default whenever the value is empty, not just when it is unset.
+    """
+    return os.environ.get(key) or default
+
+
+def _resolve_config() -> _Config:
+    """Resolve the runner's env->config, hardened against present-but-empty vars.
+
+    Pure (reads os.environ, no I/O) so the empty-env regression is unit-testable
+    without booting the proxy. Every `KEEP_*` read here uses `_env_or_default`.
+    """
+    return _Config(
+        spec_path=_env_or_default("KEEP_SPEC_PATH", DEFAULT_SPEC_PATH),
+        audit_path=_env_or_default("KEEP_EGRESS_AUDIT_PATH", DEFAULT_AUDIT_PATH),
+        host=_env_or_default("KEEP_EGRESS_HOST", DEFAULT_HOST),
+        port=int(_env_or_default("KEEP_EGRESS_PORT", str(DEFAULT_PORT))),
+    )
+
+
 async def _serve(proxy: EgressProxy) -> None:
     await proxy.start()
     await proxy.serve_forever()
 
 
 def main() -> int:
-    spec_path = os.environ.get("KEEP_SPEC_PATH", DEFAULT_SPEC_PATH)
-    audit_path = os.environ.get("KEEP_EGRESS_AUDIT_PATH", DEFAULT_AUDIT_PATH)
-    host = os.environ.get("KEEP_EGRESS_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("KEEP_EGRESS_PORT", str(DEFAULT_PORT)))
+    spec_path, audit_path, host, port = _resolve_config()
 
     try:
         spec = load_spec(spec_path)
