@@ -1,0 +1,49 @@
+# Stage-3 integration FIXTURE spec — mounted read-only into the egress proxy
+# container by tests/integration/test_egress_proxy.py. Identical to
+# specs/default-chatbot.yaml except sandbox.egress, which allowlists the
+# hermetic in-network stub server the ALLOW-path test runs (the production
+# spec keeps its real allowlist: api.anthropic.com:443). This file is a test
+# fixture, never baked into any published image.
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Egress Proxy Test Agent
+  slug: egress-proxy-test
+  description: Integration fixture — proxy allowlist points at the in-network stub server.
+  specVersion: 0.1.0
+spec:
+  persona:
+    identity: >-
+      Test fixture persona: exists only so the fixture is a fully valid
+      keep/v1 spec — the proxy under test reads metadata + sandbox.egress.
+    source: static
+  channels:
+    - type: dev-http
+      port: 8000
+  gateway:
+    queue: in-process
+  sessions:
+    mode: single
+  approval: {}
+  sandbox:
+    profile: container
+    # THE fixture allowlist: the stub server's in-network DNS alias. Anything
+    # else (e.g. the DENY-path target) is refused by construction.
+    egress:
+      - stub.allowed.test:8080
+  models:
+    provider: static
+    static:
+      script:
+        - Hello from the egress-proxy test fixture.
+    tiers: []
+    budgets:
+      maxTokensPerSession: 200000
+      onExceed: block
+  observability:
+    logLevel: info
+    audit:
+      sink: jsonl
+      path: /var/lib/agent-keep/audit.jsonl
+  persistence:
+    tier: sqlite

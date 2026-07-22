@@ -6,11 +6,13 @@ requires-python = ">=3.12"
 dependencies = [
     "keep-spec",
     "agent-runtime",
+    "keep-egress",
 ]
 
 [tool.uv.sources]
 keep-spec = { workspace = true }
 agent-runtime = { workspace = true }
+keep-egress = { workspace = true }
 
 [project.scripts]
 keep-build = "keep_build.cli:entrypoint"

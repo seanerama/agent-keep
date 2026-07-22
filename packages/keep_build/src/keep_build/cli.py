@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from agent_runtime.wiring import ComponentNotImplementedError, EgressCrossValidationError
 from keep_build.composer import emit_build_context, image_tag
+from keep_build.egress_proxy import PROXY_IMAGE, emit_proxy_build_context
 from keep_spec import AgentSpec, load_spec
 
 
@@ -65,6 +66,30 @@ def cmd_build(args: argparse.Namespace) -> int:
         return _build_from(Path(tmp))
 
 
+def cmd_build_proxy(args: argparse.Namespace) -> int:
+    """Bake the spec-INDEPENDENT egress-proxy image (keep_build.egress_proxy):
+    one generic image, allowlist mounted at run time from the same spec.yaml
+    the agent was baked from."""
+    tag = args.tag or PROXY_IMAGE
+
+    def _build_from(context_dir: Path) -> int:
+        emit_proxy_build_context(context_dir)
+        print(f"build context: {context_dir}")
+        if args.context_only:
+            return 0
+        result = subprocess.run(["docker", "build", "-t", tag, str(context_dir)])
+        if result.returncode != 0:
+            print("error: docker build failed", file=sys.stderr)
+            return result.returncode
+        print(f"built {tag}")
+        return 0
+
+    if args.context_dir:
+        return _build_from(Path(args.context_dir))
+    with tempfile.TemporaryDirectory(prefix="keep-build-proxy-") as tmp:
+        return _build_from(Path(tmp))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="keep-build", description="Agent Keep composer/builder — bake ONE spec into an image"
@@ -91,6 +116,23 @@ def main(argv: list[str] | None = None) -> int:
         help="emit the build context but skip `docker build`",
     )
     p_build.set_defaults(func=cmd_build)
+
+    p_proxy = sub.add_parser(
+        "build-proxy",
+        help="docker-build the spec-independent egress observation proxy image",
+    )
+    p_proxy.add_argument("--tag", help="override the image tag", default=None)
+    p_proxy.add_argument(
+        "--context-dir",
+        help="write the build context here (kept) instead of a temp dir",
+        default=None,
+    )
+    p_proxy.add_argument(
+        "--context-only",
+        action="store_true",
+        help="emit the build context but skip `docker build`",
+    )
+    p_proxy.set_defaults(func=cmd_build_proxy)
 
     args = parser.parse_args(argv)
     rc: int = args.func(args)

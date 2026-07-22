@@ -7,6 +7,7 @@ dependencies = [
     "keep-spec",
     "agent-runtime",
     "keep-build",
+    "keep-egress",
 ]
 
 [dependency-groups]
@@ -28,6 +29,7 @@ members = ["packages/*"]
 keep-spec = { workspace = true }
 agent-runtime = { workspace = true }
 keep-build = { workspace = true }
+keep-egress = { workspace = true }
 
 [tool.ruff]
 target-version = "py312"
@@ -36,6 +38,7 @@ src = [
     "packages/keep_spec/src",
     "packages/agent_runtime/src",
     "packages/keep_build/src",
+    "packages/keep_egress/src",
 ]
 
 [tool.ruff.lint]
@@ -47,6 +50,7 @@ files = [
     "packages/keep_spec/src/keep_spec",
     "packages/agent_runtime/src/agent_runtime",
     "packages/keep_build/src/keep_build",
+    "packages/keep_egress/src/keep_egress",
 ]
 
 [tool.pytest.ini_options]
