@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Agent Keep — root deploy helper for the target host (ADR 0004).
+# Re-namespaced from the Foundry's agent-foundry-deploy (ADR 0001 transplant):
+# same scoped-root pattern, extended with `prep-bundle` for the Stage-4 paired
+# topology. Installed ONCE (as root) at /usr/local/sbin/agent-keep-deploy; the
+# sudoers drop-in (deploy/sudoers-agent-keep) lets the deploy user run ONLY this
+# script passwordless. It performs the fixed set of privileged deploy steps for
+# ANY agent-keep chassis <slug> — and nothing else.
+#
+# The helper is the trust boundary (sudoers permits the binary with NO argument
+# restriction, so every subcommand and every <slug> is validated HERE). It
+# deploys ONE slug-agnostic systemd TEMPLATE (agent-keep@.service) and drives
+# per-slug instances, env files, the read-only spec, the bundle dir and services.
+set -euo pipefail
+
+ENV_DIR="/etc/agent-keep"
+STATE_DIR="/var/lib/agent-keep"
+UNIT_TEMPLATE="agent-keep@.service"
+
+# ── SECURITY: slug validation (REQUIRED — do not relax) ──────────────────────
+# Every <slug> that reaches a filesystem path (/etc/agent-keep/<slug>.env,
+# /etc/agent-keep/<slug>/, /var/lib/agent-keep/<slug>/) or a systemd unit name
+# (agent-keep@<slug>) is validated against this strict pattern FIRST. Only
+# lowercase ASCII letters, digits and single interior hyphens; MUST start and end
+# alphanumeric. This rejects path traversal ("../../etc/passwd"), absolute paths,
+# "..", ".", slashes, whitespace and shell metacharacters — a caller cannot
+# escape the agent-keep-<slug> namespace.
+SLUG_RE='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+validate_slug() {
+  local slug="${1-}"
+  if ! [[ "$slug" =~ $SLUG_RE ]]; then
+    echo "invalid slug: '${slug}' — must match ${SLUG_RE} (agent-keep-<slug> shape)" >&2
+    exit 3
+  fi
+}
+
+usage() {
+  echo "usage: agent-keep-deploy <command>" >&2
+  echo "  preflight-check                         probe: helper+sudoers bootstrapped (exit 0)" >&2
+  echo "  install-unit <staged-template>          install the slug-agnostic systemd template" >&2
+  echo "  write-env <slug>                        write /etc/agent-keep/<slug>.env from stdin" >&2
+  echo "  append-env <slug>                       append stdin lines to the env file (e.g. a secret)" >&2
+  echo "  install-spec <slug> <staged-spec>       install the read-only spec.yaml for the chassis" >&2
+  echo "  install-ingress <slug> <staged-relay>    install the read-only ingress-forward.py relay" >&2
+  echo "  prep-bundle <slug>                       (re)create the Stage-4 worker bundle dir" >&2
+  echo "  service <slug> <enable-now|start|stop|restart|status>" >&2
+  exit 2
+}
+
+case "${1:?$(usage)}" in
+  preflight-check)
+    # REAL, explicit probe used by deploy.sh to confirm the helper + sudoers are
+    # bootstrapped and reachable. Returns 0 on success.
+    exit 0
+    ;;
+  install-unit)
+    # Installs the SLUG-AGNOSTIC systemd template. The install TARGET is a fixed
+    # constant (agent-keep@.service) — NEVER derived from caller input — so no
+    # slug is trusted here and there is no path to traverse. The staged source is
+    # a caller-supplied path (the ssh/scp flow stages it under /tmp).
+    install -o root -g root -m 0644 "${2:?staged template path}" "/etc/systemd/system/${UNIT_TEMPLATE}"
+    systemctl daemon-reload
+    ;;
+  write-env)
+    slug="${2:?slug}"
+    validate_slug "$slug"
+    env_file="${ENV_DIR}/${slug}.env"
+    mkdir -p "$ENV_DIR"
+    # Back up the previous env file so a bad deploy is one `cp` from rollback.
+    if [ -f "$env_file" ]; then
+      cp "$env_file" "${env_file}.bak.$(date +%Y%m%d%H%M%S)"
+    fi
+    umask 077
+    cat > "$env_file"           # VALUES arrive on stdin (never on the argv/ps).
+    chown root:root "$env_file"
+    chmod 0600 "$env_file"
+    ;;
+  append-env)
+    # Append secret VALUE lines (e.g. ANTHROPIC_API_KEY=...) to the existing env
+    # file, preserving root:0600. The VALUE arrives on stdin (never on argv/ps).
+    # deploy.sh writes the digest-pinned block; the operator uses THIS to add the
+    # one host-only secret for the live variant (agent-spec rule 3).
+    slug="${2:?slug}"
+    validate_slug "$slug"
+    env_file="${ENV_DIR}/${slug}.env"
+    [ -f "$env_file" ] || { echo "no env file yet (run deploy.sh first): ${env_file}" >&2; exit 4; }
+    cp "$env_file" "${env_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cat >> "$env_file"          # appended VALUES arrive on stdin.
+    chown root:root "$env_file"
+    chmod 0600 "$env_file"
+    ;;
+  install-spec)
+    # The SAME spec.yaml the worker image was baked from, installed read-only for
+    # (a) the proxy's KEEP_SPEC_PATH mount and (b) the bundle-dir copy the
+    # mechanic reads. World-readable (0644): the uid-10001 proxy/mechanic read it
+    # through their mounts. Its bytes are config, not secrets.
+    slug="${2:?slug}"
+    validate_slug "$slug"
+    dest_dir="${ENV_DIR}/${slug}"
+    mkdir -p "$dest_dir"
+    install -o root -g root -m 0644 "${3:?staged spec path}" "${dest_dir}/spec.yaml"
+    ;;
+  install-ingress)
+    # The ingress-forward.py relay (deploy machinery), mounted read-only into the
+    # forwarder container. World-readable (0644): the uid-10001 forwarder reads it
+    # through the mount. It is deploy code, not a secret.
+    slug="${2:?slug}"
+    validate_slug "$slug"
+    dest_dir="${ENV_DIR}/${slug}"
+    mkdir -p "$dest_dir"
+    install -o root -g root -m 0644 "${3:?staged relay path}" "${dest_dir}/ingress-forward.py"
+    ;;
+  prep-bundle)
+    # Reproduce the Stage-4 bundle-dir arrangement on the host
+    # (tests/integration/test_mechanic_container.py docstring): the worker appends
+    # its audit through a single-file bind, the mechanic reads the whole dir
+    # read-only. The spec.yaml installed by `install-spec` is the source copy.
+    slug="${2:?slug}"
+    validate_slug "$slug"
+    src_spec="${ENV_DIR}/${slug}/spec.yaml"
+    [ -f "$src_spec" ] || { echo "install-spec must run before prep-bundle (${src_spec} missing)" >&2; exit 4; }
+    bundle="${STATE_DIR}/${slug}/bundle"
+    mkdir -p "$bundle"
+    chmod 0755 "${STATE_DIR}/${slug}" "$bundle"
+    # <slug>.yaml — the worker spec the mechanic cites (0644, world-read).
+    install -o root -g root -m 0644 "$src_spec" "${bundle}/${slug}.yaml"
+    # <slug>.audit.jsonl — pre-created EMPTY (0666) so the uid-10001 worker
+    # appends through the single-file bind. Created ONLY if absent — NEVER
+    # truncated: the audit log is append-only and MUST survive a redeploy.
+    audit="${bundle}/${slug}.audit.jsonl"
+    if [ ! -e "$audit" ]; then
+      : > "$audit"
+    fi
+    chmod 0666 "$audit"
+    ;;
+  service)
+    slug="${2:?slug}"
+    validate_slug "$slug"
+    unit="agent-keep@${slug}"
+    case "${3:?service verb}" in
+      enable-now) systemctl enable --now "$unit" ;;
+      start|stop|restart) systemctl "$3" "$unit" ;;
+      status) systemctl status --no-pager "$unit" ;;
+      *) echo "unsupported service verb: $3" >&2; exit 2 ;;
+    esac
+    ;;
+  *)
+    echo "unsupported command: $1" >&2
+    exit 2
+    ;;
+esac

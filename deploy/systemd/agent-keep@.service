@@ -1,0 +1,188 @@
+# Agent Keep — per-chassis PAIRED-TOPOLOGY unit TEMPLATE (ADR 0004: deploy to any
+# Docker + systemd host). Instantiated per chassis as `agent-keep@<slug>.service`,
+# where the systemd specifier `%i` expands to the worker <slug> (e.g.
+# default-chatbot). Re-namespaced + extended from the Foundry's single-container
+# agent-foundry@.service (ADR 0001 transplant): that unit shipped ONE hardened
+# container; a Keep chassis is a PAIRED TOPOLOGY on a private network — the
+# successor's new architecture (ADR 0002 egress proxy, ADR 0005 + Stage-4 paired
+# mechanic). This ONE unit stands the whole topology up and tears it down,
+# carrying the OPS-01 hardening VERBATIM onto every `docker run`.
+#
+# WHY ONE UNIT (not a compose file, not N units): the topology is a single
+# lifecycle — the worker is the thing systemd supervises (foreground ExecStart,
+# --rm); its choke-point proxy, its read-only mechanic and its ingress forwarder
+# are dependencies, brought up in ExecStartPre and torn down in ExecStop. The
+# docker invocations are LITERALLY the ones the Stage-3/Stage-4 integration tests
+# wire (tests/integration/test_egress_proxy.py + test_mechanic_container.py, now
+# joined in test_paired_topology.py) — this unit hardens that proven test
+# topology into the deploy topology.
+#
+# THE TOPOLOGY (issue #11 — this stage owns the topology half):
+#   Two per-chassis docker networks:
+#     agent-keep-%i-net     --internal: docker installs NO default route out of
+#                           it. The worker + mechanic live here ONLY.
+#     agent-keep-%i-egress  ordinary bridge (has a route out). ONLY the proxy
+#                           (for its audited outbound) and the ingress forwarder
+#                           (for host port publishing) join it.
+#   worker (default-chatbot)  -> -net ONLY (alias `worker`). NO default route.
+#     Its ONLY way out is HTTP(S)_PROXY -> the proxy (belt); -net having no route
+#     is the suspenders (contract egress-observation: "the env var alone is not
+#     the boundary" — Stage-3 test_no_direct_route_out). Publishes NO host port.
+#   egress-proxy              -> -net (alias egress-proxy) + -egress (dual-homed,
+#     exactly like the Stage-3 test). Mounts the SAME spec.yaml the worker was
+#     baked from, read-only at /etc/agent-keep/spec.yaml (KEEP_SPEC_PATH) — the
+#     allowlist source of truth. Publishes NO host port (reachable ONLY on -net).
+#     Listens 0.0.0.0 within its namespace: ACCEPTABLE — both its networks are
+#     single-tenant (proxy + forwarder + trio, no foreign tenant) and no host
+#     port is published. Set KEEP_EGRESS_HOST to pin it tighter if ever desired.
+#   mechanic                  -> -net ONLY (alias `mechanic`). Mounts the worker
+#     bundle READ-ONLY at /srv/worker-bundle (MECHANIC_WORKER_DIR — Stage-4).
+#     Publishes NO host port.
+#   ingress-forwarder         -> -egress (host-published) + -net (to reach the
+#     `worker`/`mechanic` aliases). An INGRESS-ONLY opaque TCP relay
+#     (deploy/ingress-forward.py) that maps BIND_HOST:WORKER_BIND_PORT->worker:8000
+#     and BIND_HOST:MECHANIC_BIND_PORT->mechanic:8000. It exists ONLY because
+#     `--internal` blocks docker port publishing, so the operator could not
+#     otherwise reach the dev-http surfaces to run the frozen smoke scripts. It
+#     gives the worker NO egress pivot (fixed targets, host->worker direction
+#     only), so issue #11's SECURITY intent — no unaudited co-resident egress —
+#     is fully preserved. See the script's header for the full rationale.
+#
+# THE BUNDLE DIR (Stage-4, reproduced on the host by deploy.sh's helper
+# prep-bundle — see tests/integration/test_mechanic_container.py docstring):
+#   /var/lib/agent-keep/%i/bundle/            one dir per paired worker (0755)
+#     %i.yaml                                 worker spec, copied (0644)
+#     %i.audit.jsonl                          pre-created EMPTY (0666) so the
+#                                             uid-10001 worker appends through the
+#                                             single-file bind
+#   The worker's spec-declared audit.path (/var/lib/agent-keep/audit.jsonl) is
+#   bound to %i.audit.jsonl INSIDE the bundle. This REPLACES the worker's
+#   /var/lib/agent-keep tmpfs — the audit must PERSIST on the host, and a tmpfs
+#   over the bind's parent would race mount ordering (Stage-4 note). The mechanic
+#   reads the very same dir read-only; its OWN audit is a named volume at its own
+#   /var/lib/agent-keep (never the bundle — the ADR 0011 collision fix).
+#
+# The per-chassis env file (/etc/agent-keep/%i.env, root:0600) is written by
+# deploy.sh with the digest-pinned deploy vars (NAMES in git under
+# deploy/*.env.template*; VALUES host-only — agent-spec rule 3). The Anthropic API
+# key VALUE is appended to that same file on the host at deploy time.
+[Unit]
+Description=Agent Keep chassis %i (worker + egress-proxy + mechanic + ingress)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+EnvironmentFile=/etc/agent-keep/%i.env
+
+# ---- ExecStartPre: private networks, then proxy + mechanic + ingress ----
+# Idempotent: `-` ignores "already exists"; `docker rm -f` clears any stale
+# containers from a crash so a restart is clean.
+ExecStartPre=-/usr/bin/docker network create --internal agent-keep-%i-net
+ExecStartPre=-/usr/bin/docker network create agent-keep-%i-egress
+ExecStartPre=-/usr/bin/docker rm -f agent-keep-%i-proxy
+ExecStartPre=-/usr/bin/docker rm -f agent-keep-%i-mechanic
+ExecStartPre=-/usr/bin/docker rm -f agent-keep-%i-ingress
+ExecStartPre=-/usr/bin/docker rm -f agent-keep-%i
+# Pull the pinned refs once (helper pinned them to digests in the env file).
+ExecStartPre=/usr/bin/docker pull ${WORKER_IMAGE_REF}
+ExecStartPre=/usr/bin/docker pull ${PROXY_IMAGE_REF}
+ExecStartPre=/usr/bin/docker pull ${MECHANIC_IMAGE_REF}
+# The egress-proxy: internal alias + dual-homed egress leg, spec mounted
+# read-only, own audit on a named volume (so the live ALLOW/DENY records survive
+# & are inspectable). OPS-01 hardening VERBATIM. No host port. The base hardened
+# set's /var/lib/agent-keep tmpfs is REPLACED here by the named audit volume.
+ExecStartPre=/usr/bin/docker run -d --name agent-keep-%i-proxy \
+    --network agent-keep-%i-net --network-alias egress-proxy \
+    -e KEEP_EGRESS_HOST \
+    -e KEEP_EGRESS_PORT \
+    --security-opt no-new-privileges \
+    --cap-drop ALL \
+    --read-only \
+    --pids-limit 512 \
+    --memory 256m \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    --tmpfs /tmp:mode=1777 \
+    -v /etc/agent-keep/%i/spec.yaml:/etc/agent-keep/spec.yaml:ro \
+    -v agent-keep-%i-proxy-audit:/var/lib/agent-keep \
+    ${PROXY_IMAGE_REF}
+ExecStartPre=/usr/bin/docker network connect agent-keep-%i-egress agent-keep-%i-proxy
+# The mechanic: internal-net only, bundle dir READ-ONLY, own audit on a named
+# volume (separate path — never the bundle). OPS-01 hardening VERBATIM. No host port.
+ExecStartPre=/usr/bin/docker run -d --name agent-keep-%i-mechanic \
+    --network agent-keep-%i-net --network-alias mechanic \
+    -e AGENT_IMAGE_DIGEST=${MECHANIC_IMAGE_DIGEST} \
+    -e MECHANIC_WORKER_DIR=/srv/worker-bundle \
+    -e SQLITE_PATH=/tmp/agent-keep-mechanic-sessions.sqlite3 \
+    --security-opt no-new-privileges \
+    --cap-drop ALL \
+    --read-only \
+    --pids-limit 512 \
+    --memory 512m \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    --tmpfs /tmp:mode=1777 \
+    -v /var/lib/agent-keep/%i/bundle:/srv/worker-bundle:ro \
+    -v agent-keep-%i-mechanic-audit:/var/lib/agent-keep \
+    ${MECHANIC_IMAGE_REF}
+# The ingress forwarder (proxy image + mounted relay): publishes both dev-http
+# surfaces, relays host->worker / host->mechanic ONLY (issue #11: no egress
+# pivot). OPS-01 hardening VERBATIM. Runs on -egress (host publish) then joins
+# -net (to reach the worker/mechanic aliases).
+ExecStartPre=/usr/bin/docker run -d --name agent-keep-%i-ingress \
+    --network agent-keep-%i-egress \
+    -p ${BIND_HOST}:${WORKER_BIND_PORT}:8000 \
+    -p ${BIND_HOST}:${MECHANIC_BIND_PORT}:8001 \
+    --security-opt no-new-privileges \
+    --cap-drop ALL \
+    --read-only \
+    --pids-limit 128 \
+    --memory 128m \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    --tmpfs /tmp:mode=1777 \
+    -v /etc/agent-keep/%i/ingress-forward.py:/ingress-forward.py:ro \
+    ${PROXY_IMAGE_REF} \
+    python /ingress-forward.py 8000:worker:8000 8001:mechanic:8000
+ExecStartPre=/usr/bin/docker network connect agent-keep-%i-net agent-keep-%i-ingress
+
+# ---- ExecStart: the WORKER, foreground so systemd supervises it ----
+# --internal net ONLY (no route out) + HTTP(S)_PROXY -> the paired proxy. The
+# audit is the single-file bind INTO the host bundle dir (persisted); sqlite
+# sessions ride an ephemeral /tmp tmpfs (the audit is what must persist, not the
+# dev session store). ANTHROPIC_API_KEY is passed with the `-e VAR` (no value)
+# form: docker hands it in ONLY when the env file sets it (unset for the static
+# image, set for the live anthropic variant — see docs/deploy/first-live-chassis.md).
+# OPS-01 hardening VERBATIM; the base set's /var/lib/agent-keep tmpfs is dropped
+# (the bundle bind persists the audit — Stage-4 drop_keep_tmpfs).
+ExecStart=/usr/bin/docker run --rm --name agent-keep-%i \
+    --network agent-keep-%i-net --network-alias worker \
+    -e HTTP_PROXY=http://egress-proxy:3128 \
+    -e HTTPS_PROXY=http://egress-proxy:3128 \
+    -e http_proxy=http://egress-proxy:3128 \
+    -e https_proxy=http://egress-proxy:3128 \
+    -e NO_PROXY=localhost,127.0.0.1 \
+    -e no_proxy=localhost,127.0.0.1 \
+    -e AGENT_IMAGE_DIGEST=${WORKER_IMAGE_DIGEST} \
+    -e SQLITE_PATH=${SQLITE_PATH} \
+    -e ANTHROPIC_API_KEY \
+    --security-opt no-new-privileges \
+    --cap-drop ALL \
+    --read-only \
+    --pids-limit 512 \
+    --memory 512m \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    --tmpfs /tmp:mode=1777 \
+    -v /var/lib/agent-keep/%i/bundle/%i.audit.jsonl:/var/lib/agent-keep/audit.jsonl \
+    ${WORKER_IMAGE_REF}
+
+# ---- ExecStop: tear the whole topology + both networks down ----
+ExecStop=-/usr/bin/docker stop agent-keep-%i
+ExecStop=-/usr/bin/docker rm -f agent-keep-%i-ingress
+ExecStop=-/usr/bin/docker rm -f agent-keep-%i-mechanic
+ExecStop=-/usr/bin/docker rm -f agent-keep-%i-proxy
+ExecStop=-/usr/bin/docker network rm agent-keep-%i-net
+ExecStop=-/usr/bin/docker network rm agent-keep-%i-egress
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
