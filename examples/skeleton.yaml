@@ -1,0 +1,35 @@
+# The walking skeleton's minimal valid keep/v1 AgentSpec
+# (docs/walking-skeleton.md §"The slice", item 1).
+apiVersion: keep/v1
+kind: AgentSpec
+metadata:
+  name: Walking Skeleton
+  slug: skeleton
+  description: Minimal spec-driven agent proving the Foundry spine end to end.
+  specVersion: 0.1.0
+spec:
+  persona:
+    identity: >-
+      You are the Agent Foundry walking-skeleton agent. You exist to prove the
+      pipeline: spec, compose, build, boot, message, audit, deploy.
+  channels:
+    - type: dev-http
+      port: 8000
+  gateway:
+    queue: in-process
+  sessions:
+    mode: single
+  approval: {}          # present but trivially empty — nothing requires approval
+  sandbox:
+    egress: []          # empty egress allowlist — the skeleton talks to nobody
+  models:
+    provider: static    # ADR 0004 — deterministic, hermetic, first-class
+    static:
+      script:
+        - Hello from the walking skeleton. The spine is connected.
+  observability:
+    audit:
+      sink: jsonl
+      path: /var/lib/agent-keep/audit.jsonl
+  persistence:
+    tier: sqlite

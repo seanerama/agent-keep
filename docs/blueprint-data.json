@@ -1,0 +1,665 @@
+{
+  "source": "agent-framework-blueprint.html",
+  "layers": [
+    {
+      "id": "channels",
+      "name": "01 · Channel Layer",
+      "tagline": "Where messages enter and leave — one adapter per platform",
+      "components": [
+        {
+          "id": "adapters",
+          "name": "Channel Adapters",
+          "short": "Discord · Slack · WebEx · SMS",
+          "responsibilities": [
+            "Maintain the connection to each platform (bot token, websocket session, or webhook endpoint)",
+            "Translate platform payloads into your internal message format — and back out again",
+            "Handle platform quirks: message length limits, markdown dialects, threading models, typing indicators"
+          ],
+          "decisions": [
+            {
+              "question": "How does each platform deliver messages to you?",
+              "options": [
+                "Webhooks (Slack, WebEx)",
+                "Websocket gateway (Discord)",
+                "Polling (fallback)"
+              ],
+              "considerations": "Webhooks need a public HTTPS endpoint (or a tunnel like ngrok/Cloudflare) — a real consideration on a home server. Websockets are outbound-only and firewall-friendly but need reconnect logic. Design the adapter interface so the transport is hidden from everything downstream."
+            },
+            {
+              "question": "One process per adapter, or one process for all?",
+              "options": [
+                "Monolith with asyncio tasks",
+                "Process per channel",
+                "Plugin architecture loaded at runtime"
+              ],
+              "considerations": "A single asyncio process is simplest to start. Separate processes isolate crashes (a Discord library bug can't take down Slack) but add IPC complexity. A plugin interface keeps the door open for both."
+            }
+          ],
+          "topics": [
+            "asyncio",
+            "transport",
+            "authn",
+            "procmgmt"
+          ]
+        },
+        {
+          "id": "normalizer",
+          "name": "Message Normalizer",
+          "short": "Unified internal message schema",
+          "responsibilities": [
+            "Define ONE internal message format: sender identity, channel, conversation id, content blocks, attachments",
+            "Strip/convert platform formatting into something the agent core understands",
+            "Tag every message with provenance metadata (which channel, verified or not)"
+          ],
+          "decisions": [
+            {
+              "question": "What does your canonical message schema look like?",
+              "options": [
+                "Flat dataclass/Pydantic model",
+                "Content-block list (text, image, file)",
+                "Adopt an existing spec"
+              ],
+              "considerations": "This schema is the contract for your whole system — changing it later touches every adapter. Content blocks age better than a single text field once images and files show up. Pydantic gives you validation at the boundary, which is also a security control."
+            }
+          ],
+          "topics": [
+            "state",
+            "injection"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gateway",
+      "name": "02 · Gateway & Routing",
+      "tagline": "The control plane — who gets in, and which agent they reach",
+      "components": [
+        {
+          "id": "identity",
+          "name": "Identity & Access Control",
+          "short": "Who is this, and are they allowed?",
+          "responsibilities": [
+            "Verify webhook signatures / bot token scopes so you know messages really came from the platform",
+            "Map platform identities (Discord id, phone number, WebEx email) to ONE internal user",
+            "Enforce allowlists: pairing flow for new users, tiered access for strangers vs. owner"
+          ],
+          "decisions": [
+            {
+              "question": "Who is allowed to talk to the agent?",
+              "options": [
+                "Owner-only allowlist",
+                "Pairing code flow for inviting users",
+                "Open with tiered permissions"
+              ],
+              "considerations": "This is the single highest-leverage security decision in the project. OpenClaw's open-by-default DMs were a repeated source of incidents. Start owner-only; design the identity model so multi-user is possible later without a rewrite."
+            },
+            {
+              "question": "How do you unify one human across channels?",
+              "options": [
+                "Manual linking table",
+                "Verification challenge (code sent across channels)",
+                "Keep identities separate"
+              ],
+              "considerations": "Hyper-personalization requires knowing that discord:kevin and +1-555… are the same person, or memory fragments per channel. A linking table you edit by hand is fine at first — but decide early, because memory keys off this identity."
+            }
+          ],
+          "topics": [
+            "authn",
+            "deputy",
+            "secrets"
+          ]
+        },
+        {
+          "id": "queue",
+          "name": "Message Queue & Dispatcher",
+          "short": "Decouple receive from respond",
+          "responsibilities": [
+            "Buffer inbound messages so a 30-second LLM call never blocks the webhook handler",
+            "Route each conversation to the right agent instance / session",
+            "Apply rate limits and debouncing (humans send 3 messages in a row; batch them)"
+          ],
+          "decisions": [
+            {
+              "question": "How heavy should the queue be?",
+              "options": [
+                "asyncio.Queue in-process",
+                "Redis (persistence + pub/sub)",
+                "RabbitMQ / NATS"
+              ],
+              "considerations": "In-process queues are zero-ops but lose messages on crash. Redis is the sweet spot for a home server: survives restarts, doubles as a cache and session store. Full brokers earn their complexity only with multiple worker machines."
+            },
+            {
+              "question": "Serial or concurrent handling per conversation?",
+              "options": [
+                "Strict serial per session",
+                "Concurrent with locking",
+                "Interrupt/steer mid-generation"
+              ],
+              "considerations": "Serial-per-conversation avoids a whole class of race conditions and is what users intuitively expect. Concurrency across DIFFERENT conversations is where asyncio pays off."
+            }
+          ],
+          "topics": [
+            "queues",
+            "asyncio",
+            "procmgmt"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "core",
+      "name": "03 · Agent Core",
+      "tagline": "The brain — sessions, persona, prompt assembly, memory",
+      "components": [
+        {
+          "id": "sessions",
+          "name": "Session Manager",
+          "short": "Conversation state & lifecycle",
+          "responsibilities": [
+            "Create/load/expire sessions keyed by (user, channel, conversation)",
+            "Own the conversation history and its token budget",
+            "Decide when a session is 'stale' and should reset or summarize"
+          ],
+          "decisions": [
+            {
+              "question": "What is a session, exactly?",
+              "options": [
+                "Per channel-conversation",
+                "Per user (shared across channels)",
+                "Hybrid: shared memory, separate transcripts"
+              ],
+              "considerations": "If you text the agent and then open Discord, should it remember? Sharing sessions across channels is a signature 'personalized' feature — but it complicates concurrency and privacy. Hybrid (per-channel transcript + shared long-term memory) is a strong default."
+            },
+            {
+              "question": "How do you fit history into the context window?",
+              "options": [
+                "Sliding window (drop oldest)",
+                "Rolling summarization",
+                "Retrieval of relevant past turns"
+              ],
+              "considerations": "Sliding windows silently forget commitments. Summarization preserves gist but costs tokens and can distort. Most real systems layer them: window + periodic summary + retrieval."
+            }
+          ],
+          "topics": [
+            "context",
+            "state",
+            "asyncio"
+          ]
+        },
+        {
+          "id": "persona",
+          "name": "Persona & Personalization Engine",
+          "short": "The 'hyper-personalized' differentiator",
+          "responsibilities": [
+            "Store per-user persona config: tone, name, standing instructions, preferences",
+            "Merge persona + skills + memory into the system prompt deterministically",
+            "Allow multiple distinct agents (work agent, home agent) with isolated config"
+          ],
+          "decisions": [
+            {
+              "question": "Where does personalization live?",
+              "options": [
+                "Static config files (YAML/MD)",
+                "Learned memory the agent updates",
+                "Both, with clear precedence"
+              ],
+              "considerations": "Config files are auditable and version-controllable; learned memory is magical but can drift or be poisoned by injected instructions. If the agent can write its own memory, treat memory writes as a privileged tool call worth logging."
+            },
+            {
+              "question": "One agent with modes, or many isolated agents?",
+              "options": [
+                "Single agent, per-context persona",
+                "Isolated agents with separate workspaces",
+                "Agents per channel"
+              ],
+              "considerations": "Isolation is a security boundary, not just organization: a work agent with Jira access shouldn't share a session space with a public Discord persona. This mirrors OpenClaw's multi-agent routing — decide the boundary early."
+            }
+          ],
+          "topics": [
+            "prompts",
+            "memory",
+            "deputy"
+          ]
+        },
+        {
+          "id": "assembler",
+          "name": "Prompt Assembler",
+          "short": "Compose every model request",
+          "responsibilities": [
+            "Build the final request: system prompt, tool definitions, memory snippets, history, new message",
+            "Enforce token budgets per section (persona gets N, memory gets M…)",
+            "Clearly demarcate untrusted content (inbound messages, tool results) from trusted instructions"
+          ],
+          "decisions": [
+            {
+              "question": "How do you mark untrusted content?",
+              "options": [
+                "Delimiters/tags around user content",
+                "Structural separation via API roles",
+                "Spotlighting + instruction hierarchy in system prompt"
+              ],
+              "considerations": "No technique fully stops prompt injection — the model can't reliably distinguish data from instructions. But layering (roles + tagging + explicit hierarchy) meaningfully raises the bar, and the assembler is the one place you can enforce it consistently."
+            }
+          ],
+          "topics": [
+            "prompts",
+            "context",
+            "injection"
+          ]
+        },
+        {
+          "id": "memorysys",
+          "name": "Memory System",
+          "short": "Short-term · long-term · retrieval",
+          "responsibilities": [
+            "Short-term: current session window",
+            "Long-term: durable facts and preferences per user",
+            "Retrieval: embed and search past conversations and documents (RAG)"
+          ],
+          "decisions": [
+            {
+              "question": "Structured memory or embeddings-first?",
+              "options": [
+                "Structured facts (key-value / markdown files)",
+                "Vector store over transcripts",
+                "Layered: facts + vectors"
+              ],
+              "considerations": "Plain markdown memory files are shockingly effective, human-auditable, and debuggable — a great v1. Vector search adds fuzzy recall later. Whatever you choose, define who may write memory (user command? agent autonomously?) — that's a trust decision."
+            },
+            {
+              "question": "Which vector store, when you get there?",
+              "options": [
+                "SQLite + sqlite-vec",
+                "Postgres + pgvector",
+                "Dedicated store (Chroma, Qdrant)"
+              ],
+              "considerations": "On a single home server, sqlite-vec or pgvector keeps your ops surface tiny. Dedicated stores matter at scale you likely won't hit for a personal framework."
+            }
+          ],
+          "topics": [
+            "memory",
+            "state",
+            "injection"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "capabilities",
+      "name": "04 · Capability Layer",
+      "tagline": "What the agent can DO — skills, MCP, and the blast-radius controls",
+      "components": [
+        {
+          "id": "skills",
+          "name": "Skill Registry",
+          "short": "Selectable behavior packs",
+          "responsibilities": [
+            "Discover, validate, and load skill definitions (instructions + optional tools)",
+            "Let each agent/user enable a curated subset — your 'selectable' requirement",
+            "Version skills and pin what production agents use"
+          ],
+          "decisions": [
+            {
+              "question": "What IS a skill in your framework?",
+              "options": [
+                "Markdown instructions only",
+                "Instructions + declared tool dependencies",
+                "Full plugin with code"
+              ],
+              "considerations": "Instruction-only skills (like SKILL.md files) are safe to share and easy to write. The moment skills contain executable code you inherit the entire supply-chain problem — ClawHub audits found a significant share of malicious skills. Separating 'knowledge' (markdown) from 'capability' (vetted tools) is the cleanest security boundary in the whole design."
+            },
+            {
+              "question": "How are skills selected per request?",
+              "options": [
+                "All enabled skills always in prompt",
+                "Keyword/intent triggering",
+                "Model-driven selection (skill descriptions in prompt, bodies on demand)"
+              ],
+              "considerations": "Loading everything burns context. Progressive disclosure — descriptions always visible, full instructions loaded when relevant — is the pattern that scales."
+            }
+          ],
+          "topics": [
+            "toolcalling",
+            "supplychain",
+            "context"
+          ]
+        },
+        {
+          "id": "mcpmgr",
+          "name": "MCP Client Manager",
+          "short": "Pluggable external tools",
+          "responsibilities": [
+            "Spawn/connect to MCP servers (stdio child processes or remote HTTP)",
+            "Aggregate their tools into the model's tool list, namespaced per server",
+            "Lifecycle: tear down child processes cleanly, per-session or shared clients"
+          ],
+          "decisions": [
+            {
+              "question": "stdio or HTTP transport for MCP servers?",
+              "options": [
+                "stdio (local child processes)",
+                "Streamable HTTP (remote/shared)",
+                "Both behind one interface"
+              ],
+              "considerations": "stdio is simple and local-first but ties server lifetime to your process — orphaned children are a classic bug. HTTP allows one server shared across agents and remote hosting. Abstract the transport from day one."
+            },
+            {
+              "question": "Which MCP servers get attached to which agent?",
+              "options": [
+                "Global set for all agents",
+                "Per-agent allowlist",
+                "Per-session dynamic attach"
+              ],
+              "considerations": "A per-agent allowlist is your least-privilege mechanism: the public-facing agent gets read-only tools; only the owner's agent gets email-send or shell. Tool availability IS the permission model."
+            }
+          ],
+          "topics": [
+            "mcp",
+            "procmgmt",
+            "sandbox"
+          ]
+        },
+        {
+          "id": "executor",
+          "name": "Tool Executor & Sandbox",
+          "short": "Where actions actually run",
+          "responsibilities": [
+            "Execute tool calls the model requests; return results into the conversation",
+            "Enforce approval gates for dangerous operations (shell, file writes, sending messages)",
+            "Contain execution: containers, restricted users, no default filesystem access"
+          ],
+          "decisions": [
+            {
+              "question": "What requires human approval?",
+              "options": [
+                "Nothing (full autonomy)",
+                "Allowlist of auto-approved tools, confirm the rest",
+                "Everything confirmed"
+              ],
+              "considerations": "This is your safety valve against both model mistakes and prompt injection: an injected instruction to 'email all my files' dies at the approval gate. Default-deny with a growing auto-approve list matches how trust actually develops."
+            },
+            {
+              "question": "How isolated is code/shell execution?",
+              "options": [
+                "Same process/user (don't)",
+                "Dedicated unprivileged user",
+                "Container or VM per execution"
+              ],
+              "considerations": "The agent will eventually run arbitrary-ish commands. A container boundary means a bad command or poisoned skill trashes a sandbox, not your server. Budget for this early — retrofitting isolation is painful."
+            }
+          ],
+          "topics": [
+            "sandbox",
+            "deputy",
+            "audit",
+            "toolcalling"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "model",
+      "name": "05 · Model Layer",
+      "tagline": "Provider-agnostic inference with cost control",
+      "components": [
+        {
+          "id": "llmrouter",
+          "name": "LLM Router & Provider Adapters",
+          "short": "One interface, many models",
+          "responsibilities": [
+            "Normalize provider APIs (Anthropic, OpenAI, local Ollama) behind one interface",
+            "Route by task: cheap/local model for triage & summarization, flagship for reasoning",
+            "Handle streaming, retries, rate limits, and prompt caching"
+          ],
+          "decisions": [
+            {
+              "question": "Build the abstraction or use a library?",
+              "options": [
+                "Hand-rolled thin adapter",
+                "LiteLLM / similar shim",
+                "Single provider, abstract later"
+              ],
+              "considerations": "Hand-rolling teaches you the differences (tool-call formats differ meaningfully between providers). Libraries save time but add a dependency in your most security-sensitive data path. A thin adapter over 2 providers is a great learning project."
+            },
+            {
+              "question": "Where does cost control live?",
+              "options": [
+                "Per-session token budgets",
+                "Tiered routing by task type",
+                "Caching + budget alerts"
+              ],
+              "considerations": "A 24/7 agent with cron jobs can quietly burn real money. Instrument cost per session from day one — you can't control what you don't measure."
+            }
+          ],
+          "topics": [
+            "routing",
+            "context",
+            "asyncio"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "persistence",
+      "name": "06 · Persistence & Cross-Cutting",
+      "tagline": "Everything that survives a restart — and everything watching",
+      "components": [
+        {
+          "id": "stores",
+          "name": "Data Stores",
+          "short": "Sessions · transcripts · vectors",
+          "responsibilities": [
+            "Session index + transcripts (append-only JSONL is a fine start)",
+            "User/identity tables and persona config",
+            "Vector store for retrieval memory"
+          ],
+          "decisions": [
+            {
+              "question": "Files, SQLite, or Postgres?",
+              "options": [
+                "JSONL + markdown files",
+                "SQLite",
+                "Postgres"
+              ],
+              "considerations": "Files are debuggable with cat and grep — genuinely valuable while learning. SQLite adds queryability with zero ops. Postgres earns its keep when you want pgvector and concurrent writers. You can graduate through all three."
+            }
+          ],
+          "topics": [
+            "state",
+            "memory"
+          ]
+        },
+        {
+          "id": "secretsvault",
+          "name": "Secrets & Config",
+          "short": "Keys, tokens, credentials",
+          "responsibilities": [
+            "Store API keys and bot tokens outside code and outside the agent's reach",
+            "Give the agent scoped, dedicated credentials — never your personal ones",
+            "Rotation story for when (not if) something leaks"
+          ],
+          "decisions": [
+            {
+              "question": "How are secrets stored and injected?",
+              "options": [
+                ".env + systemd credentials",
+                "sops/age encrypted files",
+                "Vault-style secret manager"
+              ],
+              "considerations": "The critical rule is architectural, not tooling: tool code receives credentials from the environment; the MODEL never sees them in context. If a secret appears in a prompt, assume it can be exfiltrated by injection."
+            }
+          ],
+          "topics": [
+            "secrets",
+            "deputy"
+          ]
+        },
+        {
+          "id": "auditobs",
+          "name": "Audit Log & Observability",
+          "short": "What did the agent do, and why?",
+          "responsibilities": [
+            "Append-only record of every tool call: who triggered it, inputs, outputs, approval status",
+            "Structured logging + metrics (latency, tokens, cost per session)",
+            "Health checks and alerting for the daemon"
+          ],
+          "decisions": [
+            {
+              "question": "How tamper-resistant does the audit log need to be?",
+              "options": [
+                "Structured log file",
+                "Append-only DB table",
+                "Hash-chained entries"
+              ],
+              "considerations": "For a personal system, an append-only table you actually review beats a fancy chain you ignore. The habit matters more than the cryptography — build the review workflow, not just the log."
+            }
+          ],
+          "topics": [
+            "audit",
+            "procmgmt"
+          ]
+        }
+      ]
+    }
+  ],
+  "studyTopics": [
+    {
+      "id": "asyncio",
+      "name": "Async programming (asyncio)",
+      "category": "systems",
+      "summary": "Event loops, coroutines, tasks, and cancellation. The gateway is fundamentally many concurrent I/O-bound connections."
+    },
+    {
+      "id": "transport",
+      "name": "Webhooks vs. websockets vs. polling",
+      "category": "systems",
+      "summary": "Each platform delivers messages differently. Know the tradeoffs in latency, reliability, and firewall friendliness."
+    },
+    {
+      "id": "queues",
+      "name": "Message queues (Redis, RabbitMQ)",
+      "category": "systems",
+      "summary": "Decouple 'message received' from 'agent responds' so one slow LLM call never blocks the pipeline."
+    },
+    {
+      "id": "state",
+      "name": "State & persistence",
+      "category": "systems",
+      "summary": "Session storage, transcripts, SQLite/Postgres basics, and schema design for per-user data."
+    },
+    {
+      "id": "procmgmt",
+      "name": "Process management",
+      "category": "systems",
+      "summary": "Daemons, systemd services, graceful shutdown, restart-on-crash. Daily life on a home server."
+    },
+    {
+      "id": "context",
+      "name": "Context window management",
+      "category": "ai",
+      "summary": "Token budgets, truncation, and summarization of long histories. The core constraint of everything."
+    },
+    {
+      "id": "prompts",
+      "name": "Prompt assembly & system prompts",
+      "category": "ai",
+      "summary": "How persona, skills, memory, and the user message get composed into each request."
+    },
+    {
+      "id": "toolcalling",
+      "name": "Tool use / function calling",
+      "category": "ai",
+      "summary": "How models request actions, and how you execute them and return results. The heart of 'skills'."
+    },
+    {
+      "id": "mcp",
+      "name": "MCP (Model Context Protocol)",
+      "category": "ai",
+      "summary": "Client vs. server roles, stdio vs. HTTP transports — the standard for pluggable tools."
+    },
+    {
+      "id": "memory",
+      "name": "Memory architectures",
+      "category": "ai",
+      "summary": "Short-term (session), long-term (user profile), and retrieval (embeddings/RAG) — the 'hyper-personalized' part."
+    },
+    {
+      "id": "routing",
+      "name": "Model routing & cost control",
+      "category": "ai",
+      "summary": "Cheap model for triage, expensive model for reasoning; caching; provider rate limits."
+    },
+    {
+      "id": "injection",
+      "name": "Prompt injection",
+      "category": "security",
+      "summary": "The #1 threat for agents reading inbound messages. Anyone who can DM the bot can attempt to steer it."
+    },
+    {
+      "id": "authn",
+      "name": "Authentication & identity",
+      "category": "security",
+      "summary": "Webhook signature verification, pairing/allowlisting, and mapping identities across channels."
+    },
+    {
+      "id": "sandbox",
+      "name": "Sandboxing & least privilege",
+      "category": "security",
+      "summary": "Containers, restricted shells, dedicated non-sensitive credentials. Never run the agent as root."
+    },
+    {
+      "id": "secrets",
+      "name": "Secrets management",
+      "category": "security",
+      "summary": "Env vars vs. vaults, never committing keys, rotation strategy."
+    },
+    {
+      "id": "supplychain",
+      "name": "Supply chain risk",
+      "category": "security",
+      "summary": "Vetting third-party skills and dependencies — exactly how ClawHub got burned."
+    },
+    {
+      "id": "deputy",
+      "name": "Confused deputy problem",
+      "category": "security",
+      "summary": "The agent has YOUR permissions but acts on OTHERS' input. This framing explains most agent security."
+    },
+    {
+      "id": "audit",
+      "name": "Audit logging",
+      "category": "security",
+      "summary": "Append-only logs of every tool call so you can reconstruct what the agent did and why."
+    }
+  ],
+  "messageLifecycle": [
+    {
+      "from": "Inbound message",
+      "detail": "Discord DM / Slack / WebEx / SMS"
+    },
+    {
+      "from": "Verify & identify",
+      "detail": "Signature check → identity map → allowlist"
+    },
+    {
+      "from": "Queue & route",
+      "detail": "Normalize → enqueue → dispatch to session"
+    },
+    {
+      "from": "Assemble prompt",
+      "detail": "Persona + skills + memory + history"
+    },
+    {
+      "from": "Model inference",
+      "detail": "Router picks model → streams response"
+    },
+    {
+      "from": "Tool loop",
+      "detail": "Tool calls → approval gate → sandboxed execution → results back to model"
+    },
+    {
+      "from": "Respond & persist",
+      "detail": "Format for channel → send → transcript + memory + audit log"
+    }
+  ]
+}

@@ -1,0 +1,1693 @@
+{
+  "$defs": {
+    "AllowlistEntry": {
+      "additionalProperties": false,
+      "description": "One allowed principal (blueprint `gateway/identity`).",
+      "properties": {
+        "id": {
+          "description": "Platform-scoped principal id, e.g. 'discord:1002003004' or 'sms:+15550100'.",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "tier": {
+          "default": "trusted",
+          "description": "Access tier (blueprint gateway/identity: tiered access strangers vs owner).",
+          "enum": [
+            "owner",
+            "trusted",
+            "guest"
+          ],
+          "title": "Tier",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "AllowlistEntry",
+      "type": "object"
+    },
+    "AnthropicProviderConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for the `anthropic` model provider (blueprint\n`model/llmrouter` \u2014 provider adapters behind one interface).",
+      "properties": {
+        "apiKeyEnv": {
+          "default": "ANTHROPIC_API_KEY",
+          "description": "Env var NAME holding the API key (never the value \u2014 contract rule 3).",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "title": "Apikeyenv",
+          "type": "string"
+        },
+        "maxTokens": {
+          "anyOf": [
+            {
+              "maximum": 128000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Max output tokens per model call (Messages API max_tokens); None = the adapter default (4096). Ceiling 128000 matches the largest current model output cap. v1 additive amendment, stage 13.",
+          "title": "Maxtokens"
+        },
+        "model": {
+          "description": "Model name, e.g. 'claude-sonnet-4-5'.",
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pricing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Operator-declared token pricing for this model path; required on every selectable path iff budgets.maxUsdPerSession is set (cross-validated). None = no pricing declared. v1 additive amendment, stage 25."
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "AnthropicProviderConfig",
+      "type": "object"
+    },
+    "Approval": {
+      "additionalProperties": false,
+      "description": "`spec.approval` \u2014 what requires human confirmation (blueprint\n`capabilities/executor`, decision 'What requires human approval?').",
+      "properties": {
+        "autoApprove": {
+          "description": "Auto-approved tool names ('<server>.<tool>'); only meaningful with policy 'allowlist-confirm-rest'. Every entry must name a grant declared in spec.tools (cross-validated at the envelope level).",
+          "items": {
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*\\.[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "title": "Autoapprove",
+          "type": "array"
+        },
+        "policy": {
+          "default": "allowlist-confirm-rest",
+          "description": "Approval policy (blueprint capabilities/executor): 'autonomous' (nothing confirmed), 'allowlist-confirm-rest' (auto-approve the allowlist, confirm the rest \u2014 default-deny), or 'everything' (everything confirmed). Default matches the blueprint's 'default-deny with a growing auto-approve list'.",
+          "enum": [
+            "autonomous",
+            "allowlist-confirm-rest",
+            "everything"
+          ],
+          "title": "Policy",
+          "type": "string"
+        }
+      },
+      "title": "Approval",
+      "type": "object"
+    },
+    "AuditConfig": {
+      "additionalProperties": false,
+      "description": "Audit sink selection inside `spec.observability` (blueprint\n`persistence/auditobs`; the append-only format is factory-level, ADR 0003\nitem 7 \u2014 the sink location is per-agent config).",
+      "properties": {
+        "path": {
+          "description": "Append-only JSONL file path inside the image.",
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sink": {
+          "const": "jsonl",
+          "description": "Audit sink component. Current library: jsonl.",
+          "title": "Sink",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sink",
+        "path"
+      ],
+      "title": "AuditConfig",
+      "type": "object"
+    },
+    "ChannelVerification": {
+      "additionalProperties": false,
+      "description": "Inbound verification for a platform channel (blueprint `gateway/identity`,\nresponsibility: verify webhook signatures / bot token scopes).\n\nNames the verifying secret's env var; values never appear in the spec\n(contract agent-spec, binding rule 3).",
+      "properties": {
+        "method": {
+          "description": "'signature' = platform-signed payloads (webhook signing secret); 'token' = authenticated bot session (bot token); 'none' = unverified (dev only).",
+          "enum": [
+            "signature",
+            "token",
+            "none"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "secretEnv": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z][A-Z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Env var NAME holding the verifying secret (never the value).",
+          "title": "Secretenv"
+        }
+      },
+      "required": [
+        "method"
+      ],
+      "title": "ChannelVerification",
+      "type": "object"
+    },
+    "DevHttpChannel": {
+      "additionalProperties": false,
+      "description": "`spec.channels[]` dev-http \u2014 localhost HTTP adapter, zero platform deps\n(blueprint `channels/adapters`; transport option: webhooks \u2014 a plain HTTP\nendpoint; no verification, honestly unverified).",
+      "properties": {
+        "port": {
+          "default": 8000,
+          "description": "TCP port the adapter listens on.",
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Port",
+          "type": "integer"
+        },
+        "transport": {
+          "const": "webhook",
+          "default": "webhook",
+          "description": "Delivery transport (blueprint channels/adapters): local HTTP endpoint.",
+          "title": "Transport",
+          "type": "string"
+        },
+        "type": {
+          "const": "dev-http",
+          "description": "Channel adapter component.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "DevHttpChannel",
+      "type": "object"
+    },
+    "DiscordChannel": {
+      "additionalProperties": false,
+      "description": "`spec.channels[]` discord (blueprint `channels/adapters`; transport\noptions: websocket gateway (Discord) / polling (fallback)).",
+      "properties": {
+        "transport": {
+          "default": "websocket",
+          "description": "Delivery transport (blueprint channels/adapters): outbound-only websocket gateway (firewall-friendly) or polling fallback.",
+          "enum": [
+            "websocket",
+            "polling"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "type": {
+          "const": "discord",
+          "description": "Channel adapter component.",
+          "title": "Type",
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/$defs/ChannelVerification",
+          "description": "Bot-token verification; names the token env var."
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "DiscordChannel",
+      "type": "object"
+    },
+    "EventTrigger": {
+      "additionalProperties": false,
+      "description": "Event-subscription activation (ADR 0003 addition: triggers / event\nsubscription) \u2014 e.g. the worked example's alarm-driven outage agent.\n\n`secretEnv` (v1 additive amendment, stage 18): the event-intake endpoint\nfails closed on a shared secret, and the spec names the env var holding it\n\u2014 the same spec-honesty posture as `ChannelVerification.secretEnv` (the\nvalue is deploy-time only, never in the spec or image; contract rule 3).\nDefaulted so every pre-amendment spec validates and behaves unchanged.",
+      "properties": {
+        "event": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event name/type filter within the source; None = all events.",
+          "title": "Event"
+        },
+        "kind": {
+          "const": "event-subscription",
+          "description": "Trigger kind discriminator.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Instruction delivered with the event payload; None = payload only.",
+          "title": "Prompt"
+        },
+        "secretEnv": {
+          "default": "EVENT_WEBHOOK_SECRET",
+          "description": "Env var NAME holding the shared secret that authenticates event deliveries to the intake endpoint (never the value \u2014 contract rule 3). v1 additive amendment, stage 18.",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "title": "Secretenv",
+          "type": "string"
+        },
+        "source": {
+          "description": "Event source the agent subscribes to (e.g. 'alertmanager').",
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source"
+      ],
+      "title": "EventTrigger",
+      "type": "object"
+    },
+    "FactsMemory": {
+      "additionalProperties": false,
+      "description": "Memory structure: structured facts \u2014 key-value / markdown files, human-\nauditable (blueprint `core/memorysys`, option 'Structured facts').",
+      "properties": {
+        "kind": {
+          "const": "facts",
+          "description": "Memory structure discriminator.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "store": {
+          "const": "none",
+          "default": "none",
+          "description": "No vector store (blueprint core/memorysys, decision 'Which vector store?'): facts live in the persistence tier.",
+          "title": "Store",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "FactsMemory",
+      "type": "object"
+    },
+    "Gateway": {
+      "additionalProperties": false,
+      "description": "`spec.gateway` \u2014 the control plane: who gets in and how work is queued\n(blueprint `gateway/identity` and `gateway/queue`).",
+      "properties": {
+        "allowlist": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GatewayAllowlist"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Access-control policy (blueprint gateway/identity). Absent = no identity layer (dev-only; the skeleton's unverified dev-http channel)."
+        },
+        "concurrency": {
+          "default": "serial",
+          "description": "Per-conversation handling (blueprint gateway/queue, decision 'Serial or concurrent handling per conversation?'): strict serial per session, or concurrent with locking.",
+          "enum": [
+            "serial",
+            "concurrent-locked"
+          ],
+          "title": "Concurrency",
+          "type": "string"
+        },
+        "identityUnification": {
+          "default": "separate",
+          "description": "How one human is unified across channels (blueprint gateway/identity, decision 'How do you unify one human across channels?'): manual linking table, verification challenge, or keep identities separate.",
+          "enum": [
+            "manual-link",
+            "challenge",
+            "separate"
+          ],
+          "title": "Identityunification",
+          "type": "string"
+        },
+        "queue": {
+          "description": "Queue weight (blueprint gateway/queue, decision 'How heavy should the queue be?'): asyncio.Queue in-process, or Redis (persistence + pub/sub).",
+          "enum": [
+            "in-process",
+            "redis"
+          ],
+          "title": "Queue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "queue"
+      ],
+      "title": "Gateway",
+      "type": "object"
+    },
+    "GatewayAllowlist": {
+      "additionalProperties": false,
+      "description": "Who may talk to the agent (blueprint `gateway/identity`, decision \"Who is\nallowed to talk to the agent?\": owner-only allowlist / pairing code flow /\nopen with tiered permissions).",
+      "properties": {
+        "policy": {
+          "description": "Allowlist policy (blueprint gateway/identity): 'owner-only', 'pairing' (code flow for inviting users), or 'tiered' (open with tiered permissions).",
+          "enum": [
+            "owner-only",
+            "pairing",
+            "tiered"
+          ],
+          "title": "Policy",
+          "type": "string"
+        },
+        "roster": {
+          "description": "Statically-declared principals; pairing may add more at runtime.",
+          "items": {
+            "$ref": "#/$defs/AllowlistEntry"
+          },
+          "title": "Roster",
+          "type": "array"
+        }
+      },
+      "required": [
+        "policy"
+      ],
+      "title": "GatewayAllowlist",
+      "type": "object"
+    },
+    "HealthConfig": {
+      "additionalProperties": false,
+      "description": "Health-check surface (blueprint `persistence/auditobs`, responsibility:\nhealth checks and alerting for the daemon).",
+      "properties": {
+        "path": {
+          "default": "/healthz",
+          "description": "HTTP health-check path.",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "title": "HealthConfig",
+      "type": "object"
+    },
+    "HttpTransport": {
+      "additionalProperties": false,
+      "description": "MCP server over streamable HTTP (blueprint `capabilities/mcpmgr`,\ntransport option 'Streamable HTTP (remote/shared)').",
+      "properties": {
+        "kind": {
+          "const": "http",
+          "description": "MCP transport discriminator.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "url": {
+          "description": "Base URL of the remote MCP server.",
+          "pattern": "^https?://\\S+$",
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "url"
+      ],
+      "title": "HttpTransport",
+      "type": "object"
+    },
+    "LayeredHistory": {
+      "additionalProperties": false,
+      "description": "History strategy: window + periodic summary + retrieval \u2014 the blueprint's\n'most real systems layer them' (blueprint `core/sessions`).",
+      "properties": {
+        "retrievalTopK": {
+          "default": 5,
+          "description": "Past turns retrieved per request.",
+          "minimum": 1,
+          "title": "Retrievaltopk",
+          "type": "integer"
+        },
+        "strategy": {
+          "const": "layered",
+          "description": "History strategy discriminator.",
+          "title": "Strategy",
+          "type": "string"
+        },
+        "summarize": {
+          "default": true,
+          "description": "Roll older turns into a summary.",
+          "title": "Summarize",
+          "type": "boolean"
+        },
+        "windowTurns": {
+          "default": 20,
+          "description": "Recent turns kept verbatim.",
+          "minimum": 1,
+          "title": "Windowturns",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "LayeredHistory",
+      "type": "object"
+    },
+    "LayeredMemory": {
+      "additionalProperties": false,
+      "description": "Memory structure: facts + vectors (blueprint `core/memorysys`, option\n'Layered: facts + vectors'; `corpus` scopes what gets embedded per the\nmemorysys retrieval responsibility).",
+      "properties": {
+        "corpus": {
+          "anyOf": [
+            {
+              "enum": [
+                "agent-summaries",
+                "transcripts",
+                "documents"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What gets embedded (blueprint core/memorysys, retrieval responsibility: 'embed and search past conversations and documents'): 'agent-summaries' (agent-written summaries), 'transcripts' (raw conversation transcripts), or 'documents'. None = the structure's default corpus (transcripts).",
+          "title": "Corpus"
+        },
+        "kind": {
+          "const": "layered",
+          "description": "Memory structure discriminator.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "store": {
+          "description": "Vector store choice for the vector layer (blueprint core/memorysys): SQLite + sqlite-vec or Postgres + pgvector.",
+          "enum": [
+            "sqlite-vec",
+            "pgvector"
+          ],
+          "title": "Store",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "store"
+      ],
+      "title": "LayeredMemory",
+      "type": "object"
+    },
+    "LocalTransport": {
+      "additionalProperties": false,
+      "description": "Tool server backed by the runtime's in-process local tool registry\n(stage-6 v1 additive amendment \u2014 a new transport enum value under contract\nrule 4). No external process, no network: the grants select from the\n`local_tools` component's registry of harmless demo tools, executed by the\nsame constraint-enforcing tool executor MCP transports plug into (stage 7).",
+      "properties": {
+        "kind": {
+          "const": "local",
+          "description": "Tool transport discriminator.",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "LocalTransport",
+      "type": "object"
+    },
+    "McpServer": {
+      "additionalProperties": false,
+      "description": "One entry of `spec.tools` \u2014 an MCP server attached to THIS agent\n(blueprint `capabilities/mcpmgr`, decision 'Which MCP servers get attached\nto which agent?', option 'Per-agent allowlist'). The `spec.tools` list IS\nthe per-agent allowlist; anything not listed is absent from the image\n(absence semantics, rule 2).",
+      "properties": {
+        "allow": {
+          "description": "Exhaustive positive per-tool allowlist with scopes; a server with no grants may not be attached.",
+          "items": {
+            "$ref": "#/$defs/ToolGrant"
+          },
+          "minItems": 1,
+          "title": "Allow",
+          "type": "array"
+        },
+        "name": {
+          "description": "Server id, used to namespace its tools.",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "secretEnvs": {
+          "description": "Env var NAMES the server needs (never values \u2014 contract rule 3); injected at runtime, never visible to the model.",
+          "items": {
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Secretenvs",
+          "type": "array"
+        },
+        "transport": {
+          "description": "stdio child process or remote HTTP.",
+          "discriminator": {
+            "mapping": {
+              "http": "#/$defs/HttpTransport",
+              "local": "#/$defs/LocalTransport",
+              "stdio": "#/$defs/StdioTransport"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/StdioTransport"
+            },
+            {
+              "$ref": "#/$defs/HttpTransport"
+            },
+            {
+              "$ref": "#/$defs/LocalTransport"
+            }
+          ],
+          "title": "Transport"
+        }
+      },
+      "required": [
+        "name",
+        "transport",
+        "allow"
+      ],
+      "title": "McpServer",
+      "type": "object"
+    },
+    "Memory": {
+      "additionalProperties": false,
+      "description": "`spec.memory` \u2014 long-term memory (blueprint `core/memorysys`). Absent\nsection = no durable memory beyond the session (absence semantics, rule 2).",
+      "properties": {
+        "structure": {
+          "description": "Structured memory or embeddings-first (blueprint core/memorysys, decision 'Structured memory or embeddings-first?'): facts / vectors / layered.",
+          "discriminator": {
+            "mapping": {
+              "facts": "#/$defs/FactsMemory",
+              "layered": "#/$defs/LayeredMemory",
+              "vectors": "#/$defs/VectorMemory"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/FactsMemory"
+            },
+            {
+              "$ref": "#/$defs/VectorMemory"
+            },
+            {
+              "$ref": "#/$defs/LayeredMemory"
+            }
+          ],
+          "title": "Structure"
+        },
+        "writePolicy": {
+          "default": "user-command",
+          "description": "Who may write memory (blueprint core/memorysys considerations: 'define who may write memory \u2014 that's a trust decision'): explicit user command, the agent autonomously, or nobody (read-only). Agent-autonomous writes are privileged tool calls \u2014 always audited (blueprint core/persona considerations).",
+          "enum": [
+            "user-command",
+            "agent-autonomous",
+            "off"
+          ],
+          "title": "Writepolicy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "structure"
+      ],
+      "title": "Memory",
+      "type": "object"
+    },
+    "MessageTrigger": {
+      "additionalProperties": false,
+      "description": "A human message activates the agent (ADR 0003 addition: triggers).\n\nThe skeleton's implicit behavior, made declarable.",
+      "properties": {
+        "kind": {
+          "const": "message",
+          "description": "Trigger kind discriminator.",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "MessageTrigger",
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": false,
+      "description": "`metadata` \u2014 identity of the spec document itself.",
+      "properties": {
+        "description": {
+          "description": "One-line description.",
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "name": {
+          "description": "Human-readable agent name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Kebab-case slug; the image becomes ghcr.io/<owner>/agent-keep-<slug>.",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "title": "Slug",
+          "type": "string"
+        },
+        "specVersion": {
+          "description": "Semver of THIS document, bumped on any edit.",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "title": "Specversion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "slug",
+        "description",
+        "specVersion"
+      ],
+      "title": "Metadata",
+      "type": "object"
+    },
+    "ModelBudgets": {
+      "additionalProperties": false,
+      "description": "Cost control (blueprint `model/llmrouter`, decision 'Where does cost\ncontrol live?', options 'Per-session token budgets' and 'budget alerts').",
+      "properties": {
+        "maxTokensPerSession": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Token ceiling per session; None = unlimited.",
+          "title": "Maxtokenspersession"
+        },
+        "maxUsdPerSession": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "USD ceiling per session; None = unlimited. Enforced against operator-declared pricing (models.*.pricing) \u2014 every selectable model path must declare pricing when this is set (cross-validated at load). v1 additive amendment, stage 25.",
+          "title": "Maxusdpersession"
+        },
+        "onExceed": {
+          "default": "block",
+          "description": "Exceeding a budget blocks further model calls, or warns (budget alerts).",
+          "enum": [
+            "block",
+            "warn"
+          ],
+          "title": "Onexceed",
+          "type": "string"
+        }
+      },
+      "title": "ModelBudgets",
+      "type": "object"
+    },
+    "ModelTier": {
+      "additionalProperties": false,
+      "description": "One routing tier (blueprint `model/llmrouter`, decisions 'Route by task'\nand 'Where does cost control live?', option 'Tiered routing by task type').",
+      "properties": {
+        "anthropic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnthropicProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Anthropic provider config; required iff provider is 'anthropic'."
+        },
+        "name": {
+          "description": "Tier name, e.g. 'triage' or 'reasoning'.",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider for this tier (blueprint model/llmrouter).",
+          "enum": [
+            "static",
+            "anthropic"
+          ],
+          "title": "Provider",
+          "type": "string"
+        },
+        "static": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StaticProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Static provider config; required iff provider is 'static'."
+        }
+      },
+      "required": [
+        "name",
+        "provider"
+      ],
+      "title": "ModelTier",
+      "type": "object"
+    },
+    "Models": {
+      "additionalProperties": false,
+      "description": "`spec.models` \u2014 model routing, providers, and budgets (blueprint\n`model/llmrouter`). 'static' is a first-class provider (ADR 0004).",
+      "properties": {
+        "anthropic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnthropicProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Anthropic provider config; required iff provider is 'anthropic'."
+        },
+        "budgets": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelBudgets"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-session cost control (blueprint model/llmrouter); None = no budgets."
+        },
+        "provider": {
+          "description": "Default provider when no tier routing applies (blueprint model/llmrouter).",
+          "enum": [
+            "static",
+            "anthropic"
+          ],
+          "title": "Provider",
+          "type": "string"
+        },
+        "static": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StaticProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Static provider config; required iff provider is 'static'."
+        },
+        "tiers": {
+          "description": "Routing tiers by task type (blueprint model/llmrouter: cheap model for triage, flagship for reasoning). Empty = single default provider.",
+          "items": {
+            "$ref": "#/$defs/ModelTier"
+          },
+          "title": "Tiers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "title": "Models",
+      "type": "object"
+    },
+    "Observability": {
+      "additionalProperties": false,
+      "description": "`spec.observability` \u2014 logging, audit sink, health (blueprint\n`persistence/auditobs`).",
+      "properties": {
+        "audit": {
+          "$ref": "#/$defs/AuditConfig",
+          "description": "Append-only audit record sink."
+        },
+        "health": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HealthConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Health-check declaration; None = the channel adapter's default surface."
+        },
+        "logLevel": {
+          "default": "info",
+          "description": "Structured-logging level for the runtime.",
+          "enum": [
+            "debug",
+            "info",
+            "warning",
+            "error"
+          ],
+          "title": "Loglevel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "audit"
+      ],
+      "title": "Observability",
+      "type": "object"
+    },
+    "Persistence": {
+      "additionalProperties": false,
+      "description": "`spec.persistence` \u2014 storage tier for sessions/transcripts/vectors\n(blueprint `persistence/stores`, decision 'Files, SQLite, or Postgres?').",
+      "properties": {
+        "tier": {
+          "description": "Storage tier (blueprint persistence/stores): 'files' (JSONL + markdown), 'sqlite', or 'postgres'. You can graduate through all three.",
+          "enum": [
+            "files",
+            "sqlite",
+            "postgres"
+          ],
+          "title": "Tier",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tier"
+      ],
+      "title": "Persistence",
+      "type": "object"
+    },
+    "Persona": {
+      "additionalProperties": false,
+      "description": "`spec.persona` \u2014 identity, tone, standing instructions, and where\npersonalization lives (blueprint `core/persona`, decision \"Where does\npersonalization live?\": static config / learned memory / both with clear\nprecedence).",
+      "properties": {
+        "identity": {
+          "description": "Who the agent is (system-prompt identity).",
+          "minLength": 1,
+          "title": "Identity",
+          "type": "string"
+        },
+        "instructions": {
+          "description": "Standing instructions, merged deterministically after identity and tone.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Instructions",
+          "type": "array"
+        },
+        "precedence": {
+          "anyOf": [
+            {
+              "enum": [
+                "static-over-learned",
+                "learned-over-static"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Conflict rule when source is 'both' (blueprint core/persona: 'Both, with clear precedence'). Required iff source is 'both'.",
+          "title": "Precedence"
+        },
+        "source": {
+          "default": "static",
+          "description": "Where personalization lives (blueprint core/persona): 'static' config in this spec, 'learned' memory the agent updates, or 'both'. Learned-persona writes are privileged, audited memory writes (see spec.memory.writePolicy).",
+          "enum": [
+            "static",
+            "learned",
+            "both"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "tone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Voice/tone guidance merged into the system prompt.",
+          "title": "Tone"
+        }
+      },
+      "required": [
+        "identity"
+      ],
+      "title": "Persona",
+      "type": "object"
+    },
+    "Pricing": {
+      "additionalProperties": false,
+      "description": "Operator-declared token pricing for one model path (blueprint\n`model/llmrouter`, decision 'Where does cost control live?').\n\nThere is NO library price table: prices drift and a stale table silently\nmis-enforces, so the OPERATOR declares pricing in the spec, right next to\nthe model it prices, and `budgets.maxUsdPerSession` enforces against these\nexact numbers (honest, auditable, no hidden knobs \u2014 ADR 0003 spirit).\nBoth rates are required together (both-or-neither): omit the `pricing`\nblock entirely for no pricing. v1 additive amendment, stage 25.",
+      "properties": {
+        "usdPerMillionInputTokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "USD charged per 1,000,000 input (prompt) tokens for this model path.",
+          "title": "Usdpermillioninputtokens"
+        },
+        "usdPerMillionOutputTokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "USD charged per 1,000,000 output (completion) tokens for this model path.",
+          "title": "Usdpermillionoutputtokens"
+        }
+      },
+      "title": "Pricing",
+      "type": "object"
+    },
+    "RetrievalHistory": {
+      "additionalProperties": false,
+      "description": "History strategy: retrieval of relevant past turns (blueprint `core/sessions`).",
+      "properties": {
+        "strategy": {
+          "const": "retrieval",
+          "description": "History strategy discriminator.",
+          "title": "Strategy",
+          "type": "string"
+        },
+        "topK": {
+          "default": 5,
+          "description": "Past turns retrieved per request.",
+          "minimum": 1,
+          "title": "Topk",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "RetrievalHistory",
+      "type": "object"
+    },
+    "Sandbox": {
+      "additionalProperties": false,
+      "description": "`spec.sandbox` \u2014 execution isolation + network egress (blueprint\n`capabilities/executor`, decision 'How isolated is code/shell execution?';\negress is ADR 0003's second addition).\n\nv1 clarification note: `egress` entries were an unconstrained `list[str]`\nin the stage-1 schema. Host[:port] format validation was added in stage 2,\nwhile the field had exactly one consumer (the walking skeleton's empty\nlist), as a format clarification of the always-intended value space \u2014 a\nnetwork egress allowlist of hosts \u2014 not a v1 break.",
+      "properties": {
+        "egress": {
+          "description": "Network egress allowlist of host[:port] entries (ADR 0003 addition: egress). Exhaustive positive declaration; default EMPTY \u2014 nothing else is reachable by construction.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Egress",
+          "type": "array"
+        },
+        "profile": {
+          "default": "container",
+          "description": "Tool-execution isolation (blueprint capabilities/executor): 'same-process' (same process/user \u2014 the blueprint says don't), 'restricted-user' (dedicated unprivileged user), or 'container' (container/VM per execution). Default container \u2014 every built agent is already a container (ADR 0003 item 8).",
+          "enum": [
+            "same-process",
+            "restricted-user",
+            "container"
+          ],
+          "title": "Profile",
+          "type": "string"
+        }
+      },
+      "title": "Sandbox",
+      "type": "object"
+    },
+    "ScheduleTrigger": {
+      "additionalProperties": false,
+      "description": "Cron-scheduled activation (ADR 0003 addition: triggers / schedule).\n\nv1 clarification note (#10, stage 22 \u2014 the stage-2/5 format-clarification\nprocedure under contract rule 4): the original `cron` pattern validated\ntoken COUNT only, so `never gonna give you up` passed. Real five-field\nvalidation (`keep_spec.cron.parse_cron`) pins the always-intended value\nspace \u2014 an executable cron expression \u2014 now that the schedule trigger has\na runtime component. Every in-repo spec's cron string was already valid.",
+      "properties": {
+        "cron": {
+          "description": "Five-field cron expression (minute hour day-of-month month day-of-week), evaluated in UTC. Per field: '*', numbers, ranges (N-M), comma lists, and '/step' on '*' or a range; day-of-week 0-7 (0 and 7 both Sunday). Exactly five fields \u2014 @names are not supported.",
+          "pattern": "^\\s*[0-9*,/-]+(\\s+[0-9*,/-]+){4}\\s*$",
+          "title": "Cron",
+          "type": "string"
+        },
+        "kind": {
+          "const": "schedule",
+          "description": "Trigger kind discriminator.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "Instruction delivered to the agent when the schedule fires.",
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "cron",
+        "prompt"
+      ],
+      "title": "ScheduleTrigger",
+      "type": "object"
+    },
+    "Sessions": {
+      "additionalProperties": false,
+      "description": "`spec.sessions` \u2014 session definition and lifecycle (blueprint\n`core/sessions`).",
+      "properties": {
+        "definition": {
+          "anyOf": [
+            {
+              "enum": [
+                "per-channel",
+                "per-user",
+                "hybrid"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What a session IS (blueprint core/sessions, decision 'What is a session, exactly?'): per channel-conversation, per user (shared across channels), or hybrid (shared memory, separate transcripts). Absent = the skeleton's single session.",
+          "title": "Definition"
+        },
+        "history": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "layered": "#/$defs/LayeredHistory",
+                  "retrieval": "#/$defs/RetrievalHistory",
+                  "sliding-window": "#/$defs/SlidingWindowHistory",
+                  "summarization": "#/$defs/SummarizationHistory"
+                },
+                "propertyName": "strategy"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/SlidingWindowHistory"
+                },
+                {
+                  "$ref": "#/$defs/SummarizationHistory"
+                },
+                {
+                  "$ref": "#/$defs/RetrievalHistory"
+                },
+                {
+                  "$ref": "#/$defs/LayeredHistory"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How history fits the context window (blueprint core/sessions, decision 'How do you fit history into the context window?'): sliding-window / summarization / retrieval / layered. Absent = whole-session history (skeleton).",
+          "title": "History"
+        },
+        "mode": {
+          "const": "single",
+          "description": "Stage-1 session manager component. Skeleton subset: single.",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "Sessions",
+      "type": "object"
+    },
+    "SkillPack": {
+      "additionalProperties": false,
+      "description": "One entry of `spec.skills` \u2014 an instruction pack (knowledge, never code;\nfactory-level ADR 0003 item 5 fixes the skill definition) with its selection\nstrategy (blueprint `capabilities/skills`, decision 'How are skills selected\nper request?').",
+      "properties": {
+        "keywords": {
+          "description": "Trigger keywords; required iff selection is 'keyword'.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Keywords",
+          "type": "array"
+        },
+        "name": {
+          "description": "Skill pack id in the skill registry.",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "selection": {
+          "default": "always",
+          "description": "Selection strategy (blueprint capabilities/skills): 'always' in prompt, 'keyword' (keyword/intent triggering), or 'model-driven' (descriptions in prompt, bodies on demand).",
+          "enum": [
+            "always",
+            "keyword",
+            "model-driven"
+          ],
+          "title": "Selection",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Version pin (blueprint capabilities/skills: pin what production agents use).",
+          "title": "Version"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SkillPack",
+      "type": "object"
+    },
+    "SlackChannel": {
+      "additionalProperties": false,
+      "description": "`spec.channels[]` slack (blueprint `channels/adapters`; transport\noptions: webhooks (Slack) / websocket (Socket Mode) / polling (fallback)).",
+      "properties": {
+        "transport": {
+          "default": "webhook",
+          "description": "Delivery transport (blueprint channels/adapters): webhook (Events API, needs a public HTTPS endpoint), websocket (Socket Mode), or polling fallback.",
+          "enum": [
+            "webhook",
+            "websocket",
+            "polling"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "type": {
+          "const": "slack",
+          "description": "Channel adapter component.",
+          "title": "Type",
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/$defs/ChannelVerification",
+          "description": "Request-signature verification; names the signing-secret env var."
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "SlackChannel",
+      "type": "object"
+    },
+    "SlidingWindowHistory": {
+      "additionalProperties": false,
+      "description": "History strategy: drop oldest turns (blueprint `core/sessions`).",
+      "properties": {
+        "maxTurns": {
+          "default": 50,
+          "description": "Turns kept before the oldest is dropped.",
+          "minimum": 1,
+          "title": "Maxturns",
+          "type": "integer"
+        },
+        "strategy": {
+          "const": "sliding-window",
+          "description": "History strategy discriminator.",
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "SlidingWindowHistory",
+      "type": "object"
+    },
+    "SmsChannel": {
+      "additionalProperties": false,
+      "description": "`spec.channels[]` sms (blueprint `channels/adapters`; transport options:\nwebhooks (SMS gateway callback) / polling (fallback)).",
+      "properties": {
+        "transport": {
+          "default": "webhook",
+          "description": "Delivery transport (blueprint channels/adapters).",
+          "enum": [
+            "webhook",
+            "polling"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "type": {
+          "const": "sms",
+          "description": "Channel adapter component.",
+          "title": "Type",
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/$defs/ChannelVerification",
+          "description": "Gateway-signature verification; names the secret env var."
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "SmsChannel",
+      "type": "object"
+    },
+    "SpecSections": {
+      "additionalProperties": false,
+      "description": "`spec` \u2014 the agent-level sections (contract agent-spec schema block).\n\nSections required by the walking skeleton stay required; every section and\nfield added since stage 1 is optional or defaulted (additive, rule 4).",
+      "properties": {
+        "approval": {
+          "$ref": "#/$defs/Approval"
+        },
+        "channels": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "dev-http": "#/$defs/DevHttpChannel",
+                "discord": "#/$defs/DiscordChannel",
+                "slack": "#/$defs/SlackChannel",
+                "sms": "#/$defs/SmsChannel",
+                "webex": "#/$defs/WebexChannel"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/DevHttpChannel"
+              },
+              {
+                "$ref": "#/$defs/DiscordChannel"
+              },
+              {
+                "$ref": "#/$defs/SlackChannel"
+              },
+              {
+                "$ref": "#/$defs/WebexChannel"
+              },
+              {
+                "$ref": "#/$defs/SmsChannel"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Channels",
+          "type": "array"
+        },
+        "gateway": {
+          "$ref": "#/$defs/Gateway"
+        },
+        "memory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Memory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Long-term memory; absent = none built (absence semantics)."
+        },
+        "models": {
+          "$ref": "#/$defs/Models"
+        },
+        "observability": {
+          "$ref": "#/$defs/Observability"
+        },
+        "persistence": {
+          "$ref": "#/$defs/Persistence"
+        },
+        "persona": {
+          "$ref": "#/$defs/Persona"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/Sandbox"
+        },
+        "sessions": {
+          "$ref": "#/$defs/Sessions"
+        },
+        "skills": {
+          "description": "Instruction packs enabled for this agent; absent tools/skills are absent.",
+          "items": {
+            "$ref": "#/$defs/SkillPack"
+          },
+          "title": "Skills",
+          "type": "array"
+        },
+        "tools": {
+          "description": "Per-agent MCP server allowlist; empty = no external tools in the image.",
+          "items": {
+            "$ref": "#/$defs/McpServer"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "triggers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Triggers"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What activates the agent; absent = message-only."
+        }
+      },
+      "required": [
+        "persona",
+        "channels",
+        "gateway",
+        "sessions",
+        "approval",
+        "sandbox",
+        "models",
+        "observability",
+        "persistence"
+      ],
+      "title": "SpecSections",
+      "type": "object"
+    },
+    "StaticProviderConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for the `static` model provider (ADR 0004 \u2014 deterministic,\nhermetic, first-class).",
+      "properties": {
+        "script": {
+          "description": "Deterministic scripted replies; call N returns script[N % len(script)].",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Script",
+          "type": "array"
+        }
+      },
+      "required": [
+        "script"
+      ],
+      "title": "StaticProviderConfig",
+      "type": "object"
+    },
+    "StdioTransport": {
+      "additionalProperties": false,
+      "description": "MCP server as a local child process (blueprint `capabilities/mcpmgr`,\ntransport option 'stdio'; the factory supports both transports behind one\ninterface \u2014 ADR 0003 item 4).",
+      "properties": {
+        "args": {
+          "description": "Arguments for the command.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "array"
+        },
+        "command": {
+          "description": "Executable to spawn.",
+          "minLength": 1,
+          "title": "Command",
+          "type": "string"
+        },
+        "kind": {
+          "const": "stdio",
+          "description": "MCP transport discriminator.",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "command"
+      ],
+      "title": "StdioTransport",
+      "type": "object"
+    },
+    "SummarizationHistory": {
+      "additionalProperties": false,
+      "description": "History strategy: rolling summarization (blueprint `core/sessions`).",
+      "properties": {
+        "strategy": {
+          "const": "summarization",
+          "description": "History strategy discriminator.",
+          "title": "Strategy",
+          "type": "string"
+        },
+        "summarizeAfterTurns": {
+          "default": 20,
+          "description": "Turns accumulated before a summarization pass.",
+          "minimum": 1,
+          "title": "Summarizeafterturns",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "SummarizationHistory",
+      "type": "object"
+    },
+    "ToolGrant": {
+      "additionalProperties": false,
+      "description": "One allowed tool on an MCP server (blueprint `capabilities/mcpmgr`:\n'tool availability IS the permission model').\n\n`constraints` (v1 additive amendment, stage 4) narrows a grant further:\nhard parameter pins the runtime tool executor MUST enforce (e.g.\n`room: noc-outages` on a paging tool). No constraint-enforcing executor\nexists yet, so any grant carrying constraints fails the buildable-check\nloudly (same fail-loud pattern as egress/approval).",
+      "properties": {
+        "constraints": {
+          "anyOf": [
+            {
+              "minProperties": 1,
+              "patternProperties": {
+                "^[a-zA-Z_][a-zA-Z0-9_]{0,63}$": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hard parameter pins the tool executor MUST enforce: constraint name -> validated scalar (identifier-ish string, int, or bool \u2014 never free prose), e.g. pinning a paging tool to `room: noc-outages`. None = no pins.",
+          "title": "Constraints"
+        },
+        "name": {
+          "description": "Tool name as exposed by the MCP server.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "scope": {
+          "default": "read-only",
+          "description": "Grant scope (blueprint capabilities/mcpmgr considerations: 'the public-facing agent gets read-only tools'). Default read-only \u2014 least privilege.",
+          "enum": [
+            "read-only",
+            "read-write"
+          ],
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ToolGrant",
+      "type": "object"
+    },
+    "Triggers": {
+      "additionalProperties": false,
+      "description": "`spec.triggers` \u2014 what activates the agent (ADR 0003 addition:\nmessage / schedule / event subscription). Absent section = message-only.",
+      "properties": {
+        "activations": {
+          "description": "Exhaustive positive list of activations; default is message-only.",
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "event-subscription": "#/$defs/EventTrigger",
+                "message": "#/$defs/MessageTrigger",
+                "schedule": "#/$defs/ScheduleTrigger"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/MessageTrigger"
+              },
+              {
+                "$ref": "#/$defs/ScheduleTrigger"
+              },
+              {
+                "$ref": "#/$defs/EventTrigger"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Activations",
+          "type": "array"
+        }
+      },
+      "title": "Triggers",
+      "type": "object"
+    },
+    "VectorMemory": {
+      "additionalProperties": false,
+      "description": "Memory structure: vector store over transcripts (blueprint\n`core/memorysys`, option 'Vector store over transcripts'; `corpus` scopes\nwhat gets embedded per the memorysys retrieval responsibility).",
+      "properties": {
+        "corpus": {
+          "anyOf": [
+            {
+              "enum": [
+                "agent-summaries",
+                "transcripts",
+                "documents"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What gets embedded (blueprint core/memorysys, retrieval responsibility: 'embed and search past conversations and documents'): 'agent-summaries' (agent-written summaries), 'transcripts' (raw conversation transcripts), or 'documents'. None = the structure's default corpus (transcripts).",
+          "title": "Corpus"
+        },
+        "kind": {
+          "const": "vectors",
+          "description": "Memory structure discriminator.",
+          "title": "Kind",
+          "type": "string"
+        },
+        "store": {
+          "description": "Vector store choice (blueprint core/memorysys, decision 'Which vector store, when you get there?'): SQLite + sqlite-vec or Postgres + pgvector.",
+          "enum": [
+            "sqlite-vec",
+            "pgvector"
+          ],
+          "title": "Store",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "store"
+      ],
+      "title": "VectorMemory",
+      "type": "object"
+    },
+    "WebexChannel": {
+      "additionalProperties": false,
+      "description": "`spec.channels[]` webex (blueprint `channels/adapters`; transport\noptions: webhooks (WebEx) / polling (fallback)).",
+      "properties": {
+        "transport": {
+          "default": "webhook",
+          "description": "Delivery transport (blueprint channels/adapters).",
+          "enum": [
+            "webhook",
+            "polling"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "type": {
+          "const": "webex",
+          "description": "Channel adapter component.",
+          "title": "Type",
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/$defs/ChannelVerification",
+          "description": "Webhook-signature verification; names the secret env var."
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "WebexChannel",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The keep/v1 AgentSpec envelope.",
+  "properties": {
+    "apiVersion": {
+      "const": "keep/v1",
+      "title": "Apiversion",
+      "type": "string"
+    },
+    "kind": {
+      "const": "AgentSpec",
+      "title": "Kind",
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/SpecSections"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "title": "AgentSpec",
+  "type": "object"
+}
