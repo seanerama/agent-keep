@@ -44,10 +44,25 @@ if [ ! -f "$SPEC" ]; then
   exit 66
 fi
 
+# Resolve how to invoke keep-build. It is a uv workspace console script, so it is
+# only on PATH inside an activated venv (e.g. CI); an operator running from a
+# plain shell has it via `uv run keep-build`. Prefer the bare command if present,
+# else fall back to `uv run` (issue #47). Overridable via $KEEP_BUILD.
+if [ -n "${KEEP_BUILD:-}" ]; then
+  read -r -a _kb <<<"$KEEP_BUILD"
+elif command -v keep-build >/dev/null 2>&1; then
+  _kb=(keep-build)
+elif command -v uv >/dev/null 2>&1; then
+  _kb=(uv run keep-build)
+else
+  echo "keep-build not found — need the keep-build console script on PATH, or 'uv' to run it from the repo" >&2
+  exit 69
+fi
+
 # 1. Bake locally. All keep-build/docker-build chatter to stderr so stdout stays
 #    clean for the single id line at the end.
-echo "==> build worker image locally: keep-build build ${SPEC} --tag ${REF}" >&2
-keep-build build "$SPEC" --tag "$REF" >&2
+echo "==> build worker image locally: ${_kb[*]} build ${SPEC} --tag ${REF}" >&2
+"${_kb[@]}" build "$SPEC" --tag "$REF" >&2
 
 # 2. Deliver (stream save|load, no file, no registry) and 3. pin by immutable id.
 if [ "$HOST" = "-" ] || [ "$HOST" = "LOCAL" ]; then
