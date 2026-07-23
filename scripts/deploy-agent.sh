@@ -197,13 +197,15 @@ deploy_local() {
   _local_teardown() {
     local n
     for n in "$worker" "$ingress" "$mechanic" "$proxy"; do
-      [ -n "$n" ] && docker rm -f "$n" >/dev/null 2>&1 || true
+      [ -n "$n" ] || continue
+      docker rm -f "$n" >/dev/null 2>&1 || true
     done
     for n in "$net" "$egress"; do
-      [ -n "$n" ] && docker network rm "$n" >/dev/null 2>&1 || true
+      [ -n "$n" ] || continue
+      docker network rm "$n" >/dev/null 2>&1 || true
     done
-    [ -n "$secret_env" ] && rm -f "$secret_env" >/dev/null 2>&1 || true
-    [ -n "$bundle" ] && rm -rf "$bundle" >/dev/null 2>&1 || true
+    [ -z "$secret_env" ] || rm -f "$secret_env" >/dev/null 2>&1 || true
+    [ -z "$bundle" ] || rm -rf "$bundle" >/dev/null 2>&1 || true
   }
   trap _local_teardown EXIT
 
