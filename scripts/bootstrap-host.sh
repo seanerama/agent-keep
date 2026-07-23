@@ -126,14 +126,17 @@ scp -q "$HELPER_SRC" "$TARGET":/tmp/agent-keep-deploy \
 scp -q "$SUDOERS_RENDERED" "$TARGET":/tmp/sudoers-agent-keep \
   || fail "could not copy the rendered sudoers to ${TARGET}"
 
-# One privileged, interactive (ssh -t) transaction — mirrors the runbook: install
-# the helper 0755 root, install the sudoers 0440 root, validate with visudo -c,
-# then clean up the staged copies.
-ssh -t "$TARGET" "sudo install -o root -g root -m 0755 /tmp/agent-keep-deploy ${HELPER_DEST} \
+# One privileged, interactive (ssh -t) transaction. Validate the STAGED sudoers
+# with `visudo -cf` FIRST, so a malformed file is rejected before it can reach
+# /etc/sudoers.d/ (a bad drop-in there can break sudo host-wide). Then install
+# the helper 0755 root, install the validated sudoers 0440 root, re-check the
+# whole config with visudo -c, and clean up the staged copies.
+ssh -t "$TARGET" "sudo visudo -cf /tmp/sudoers-agent-keep \
+  && sudo install -o root -g root -m 0755 /tmp/agent-keep-deploy ${HELPER_DEST} \
   && sudo install -o root -g root -m 0440 /tmp/sudoers-agent-keep /etc/sudoers.d/agent-keep \
   && sudo visudo -c \
   && rm -f /tmp/agent-keep-deploy /tmp/sudoers-agent-keep" \
-  || fail "installing the helper/sudoers on ${TARGET} failed (visudo -c rejected it, or the install did)"
+  || fail "installing the helper/sudoers on ${TARGET} failed (visudo rejected the sudoers, or the install did)"
 echo "    helper installed 0755 at ${HELPER_DEST}"
 echo "    sudoers installed 0440 at /etc/sudoers.d/agent-keep (visudo -c ok)"
 

@@ -123,15 +123,21 @@ def test_deploy_user_substituted_before_install(tmp_path: Path) -> None:
 
 
 def test_install_and_visudo_driven_in_order(tmp_path: Path) -> None:
-    """helper install → sudoers install → `visudo -c` in that order."""
+    """The staged sudoers is validated (`visudo -cf`) BEFORE it is installed to
+    /etc/sudoers.d/ (a malformed drop-in there can break sudo host-wide), then
+    helper install → sudoers install → full `visudo -c` recheck."""
     log, _ = _write_stub_bin(tmp_path, docker_present=True)
     result = _run_bootstrap(tmp_path)
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     blob = "\n".join(_cmds(log))
+    prevalidate_idx = blob.index("visudo -cf /tmp/sudoers-agent-keep")
     helper_idx = blob.index("install -o root -g root -m 0755 /tmp/agent-keep-deploy")
     sudoers_idx = blob.index("install -o root -g root -m 0440 /tmp/sudoers-agent-keep")
-    visudo_idx = blob.index("visudo -c")
-    assert helper_idx < sudoers_idx < visudo_idx, blob
+    final_visudo_idx = blob.rindex("visudo -c")  # the full-config recheck (last)
+    # staged file validated before it lands in /etc/sudoers.d/
+    assert prevalidate_idx < sudoers_idx, blob
+    # helper before sudoers before the final full recheck
+    assert helper_idx < sudoers_idx < final_visudo_idx, blob
 
 
 def test_rerun_is_idempotent_docker_install_skipped(tmp_path: Path) -> None:
