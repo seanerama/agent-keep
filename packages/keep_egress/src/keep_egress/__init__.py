@@ -28,27 +28,36 @@ dark-launchable feature — deny-all on an empty allowlist IS the safe default.
 
 The `egress` audit record (frozen field names)
 ----------------------------------------------
-audit-record v1, ADDITIVE record kind `egress` with `action: connect`
-(contracts/audit-record.md + contracts/egress-observation.md — documented
-here, never by editing contracts/). Field names froze with this stage's first
-green test and are additive-only from then on:
+audit-record v1, ADDITIVE record kind `egress` with `action: connect` (and,
+since issue #24, an additive `action: open` for real-time CONNECT establish —
+contracts/egress-observation.md amendment 2026-07-22). Field names froze with
+this stage's first green test and are additive-only from then on:
 
     id            uuid of the record
     ts            RFC 3339 UTC timestamp
     agent.slug    metadata.slug of the observed agent's spec
     agent.spec_version  metadata.specVersion of that spec
     event         literal "egress"           (the additive record kind)
-    action        literal "connect"          (per the contract's wire section)
+    action        "connect" | "open"         (per the contract's wire section;
+                  "open" added additively — issue #24 / egress-observation
+                  amendment 2026-07-22 — for the real-time record emitted at
+                  CONNECT establish, paired to its "connect" close record by
+                  connection_id)
     target        "host:port" of the attempt ("invalid" for unparseable
                   requests — a safe representation; raw request bytes are
                   never logged)
     verdict       "allowed" | "denied"
     matched_entry the sandbox.egress entry that allowed it, or null on deny
-    bytes_up      bytes relayed client->target, counted on close
-    bytes_down    bytes relayed target->client, counted on close
+    bytes_up      bytes relayed client->target, counted on close (0 on `open`)
+    bytes_down    bytes relayed target->client, counted on close (0 on `open`)
     run_id        run-correlation key when the attempt is attributable to a
                   run (contract: "when attributable"); the v1 proxy is not
                   run-aware, so this is null on every record today
+    connection_id correlation seam pairing an allowed CONNECT's `open` record
+                  (at establish) with its `connect` record (on close); single
+                  records get their own unique one. Additive field (issue #24 /
+                  egress-observation amendment 2026-07-22), the same kind of
+                  change as audit-record's additive `trace_id`
 
 Digests-not-payloads discipline: the proxy records connection TARGETS as
 host:port only — never URLs beyond host:port, never headers, never bodies,

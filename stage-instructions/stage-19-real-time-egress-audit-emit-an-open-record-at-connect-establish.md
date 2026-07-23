@@ -14,27 +14,38 @@ observability + preserved byte accounting.
 
 ## What to build
 
+- **`packages/keep_egress/src/keep_egress/records.py`**: two ADDITIVE changes,
+  both following the `audit-record` 2026-07-14 `trace_id` precedent (add a new
+  value / a new optional field — existing consumers ignore the new key, nothing
+  existing is removed or repurposed):
+  - `action: Literal["connect"]` → `Literal["connect", "open"]` (new value).
+  - a `connection_id: str` field (default_factory uuid4) that pairs the open+close
+    records of one CONNECT (both carry the SAME connection_id); single records
+    (denied, allowed-HTTP) get their own unique one. This is the correlation seam.
+    Note honestly: this new field appears on ALL egress records going forward —
+    that is *additive* (a new key, ignorable by existing consumers), the same kind
+    of change as audit-record's additive `trace_id`. It is NOT a removal or a
+    field/semantic change to `id/target/verdict/matched_entry/bytes_*/run_id`.
 - **`packages/keep_egress/src/keep_egress/proxy.py`**: when an allowed CONNECT
-  tunnel is ESTABLISHED (before the bidirectional relay begins), append an
-  `open` record to the audit sink: same target/verdict(`allowed`)/matched_entry/
-  run-correlation as the close record, `action: open`, bytes not-yet-known
-  (0/null). The existing on-close record stays exactly as-is (`action: connect`,
-  final `bytes_up`/`bytes_down`). Absolute-form HTTP (which already flushes on
-  close-per-request via forced `Connection: close`) does NOT need an open record —
-  scope this to the CONNECT (tunnel) path where the deferral occurs. Pair the two
-  records by the run-correlation key / a shared connection id so a consumer can
-  match open↔close.
-- **`packages/keep_egress/src/keep_egress/records.py`**: add `open` to the
-  `action` enum (additive); keep the frozen field roster otherwise unchanged.
+  tunnel is ESTABLISHED (after writing 200 Established, before `_tunnel`), append
+  an `open` record: `action: open`, same target/`verdict:allowed`/matched_entry,
+  bytes 0, and the connection's shared `connection_id`. The existing on-close
+  record stays as-is except it now also carries that same `connection_id`
+  (`action: connect`, final bytes). Absolute-form HTTP (already flushes
+  per-request via forced `Connection: close`) does NOT get an `open` record —
+  scope the open record to the CONNECT/tunnel path where the deferral occurs.
+  Make the open-record append resilient the same way the close append is (a
+  failing sink append must not break the tunnel or leak a connection slot — reuse
+  the stage-18 pattern).
 - **`contracts/egress-observation.md` — ADDITIVE amendment** (dated, mirroring the
-  audit-record 2026-07-14 amendment precedent): document the two-phase model for
-  allowed CONNECT tunnels — an `action: open` record at establish (real-time, no
-  byte counts) + the existing `action: connect` record on close (final bytes).
-  Existing `connect` records are byte-for-byte unchanged; `open` is a NEW additive
-  action a consumer filtering on `connect` never sees. State explicitly that this
-  is additive (the "one record per attempt" description now reads: allowed tunnels
-  emit open+close; denied/HTTP still emit one). Do NOT alter any existing field or
-  the `connect`/`denied` records.
+  audit-record 2026-07-14 precedent): document the two-phase model for allowed
+  CONNECT tunnels — an `action: open` record at establish (real-time, no byte
+  counts) + the existing `action: connect` record on close (final bytes),
+  correlated by `connection_id`. State explicitly this is ADDITIVE: a new action
+  value + a new field, existing consumers filtering on `action: connect` and
+  reading the known fields are unaffected; no existing field is removed or
+  repurposed. The "one record per attempt" line now reads: allowed CONNECT tunnels
+  emit open+close (paired by connection_id); denied/HTTP still emit one.
 
 ## Interface contracts
 
@@ -64,8 +75,10 @@ observability + preserved byte accounting.
 - [ ] Observably-works: an in-flight allowed cloud call shows an `open` egress
       record in real time (before close), with the `connect`+bytes record still on
       close (ties to the live re-verify of the deferred-record fix)
-- [ ] Additive amendment ONLY — existing `connect`/`denied` records byte-for-byte
-      unchanged; new `open` action is ignorable by existing consumers
+- [ ] Additive amendment ONLY (audit-record `trace_id` precedent): a new `open`
+      action value + a new `connection_id` field; NO existing field removed or
+      repurposed; a consumer filtering `action: connect` and reading the known
+      fields is unaffected. Denied/HTTP still emit exactly one record.
 - [ ] Existing suite stays green; CI all-green
 
 ## Pipeline test: YES — the container job asserts the real-time open record

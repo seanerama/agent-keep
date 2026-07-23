@@ -118,7 +118,10 @@ async def test_absolute_form_allowed(make_proxy: MakeProxy, stub_server: int) ->
         f"Host: 127.0.0.1:{stub_server}\r\nProxy-Connection: keep-alive\r\n\r\n".encode(),
     )
     assert b"200 OK" in response and response.endswith(b"hello")
+    # Additivity: absolute-form HTTP still emits EXACTLY ONE `connect` record
+    # (it already flushes per-request via forced Connection: close) — NO `open`.
     (record,) = await _wait_records(sink_path, 1)
+    assert record.action == "connect"
     assert record.verdict == "allowed"
     assert record.target == f"127.0.0.1:{stub_server}"
     assert record.matched_entry == "127.0.0.1"
@@ -141,12 +144,23 @@ async def test_absolute_form_denied_403(make_proxy: MakeProxy) -> None:
 
 
 async def test_connect_allowed_tunnels_bytes(make_proxy: MakeProxy, stub_server: int) -> None:
+    """Issue #24 two-phase: an allowed CONNECT emits an `open` record at
+    establish (real-time, zero bytes) AND a `connect` record on close (final
+    bytes); the two share a connection_id."""
     proxy, sink_path = await make_proxy([f"127.0.0.1:{stub_server}"])
     reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
     writer.write(f"CONNECT 127.0.0.1:{stub_server} HTTP/1.1\r\n\r\n".encode())
     await writer.drain()
     established = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10)
     assert b"200 Connection Established" in established
+
+    # The `open` record is present in REAL TIME — before we send a byte or close.
+    (opened,) = await _wait_records(sink_path, 1)
+    assert opened.action == "open"
+    assert opened.verdict == "allowed"
+    assert opened.matched_entry == f"127.0.0.1:{stub_server}"
+    assert opened.bytes_up == 0 and opened.bytes_down == 0
+
     # opaque bytes through the tunnel (would be TLS in real HTTPS)
     inner_request = b"GET / HTTP/1.1\r\nHost: stub\r\n\r\n"
     writer.write(inner_request)
@@ -154,22 +168,80 @@ async def test_connect_allowed_tunnels_bytes(make_proxy: MakeProxy, stub_server:
     tunneled = await asyncio.wait_for(reader.read(), timeout=10)
     assert tunneled == STUB_RESPONSE
     writer.close()
-    await asyncio.sleep(0.1)  # let the proxy close out and append the record
-    (record,) = await _wait_records(sink_path, 1)
-    assert record.verdict == "allowed"
-    assert record.matched_entry == f"127.0.0.1:{stub_server}"
-    assert record.bytes_up == len(inner_request)  # post-establishment bytes only
-    assert record.bytes_down == len(STUB_RESPONSE)
+    await asyncio.sleep(0.1)  # let the proxy close out and append the close record
+    records = await _wait_records(sink_path, 2)
+    actions = [r.action for r in records]
+    assert actions == ["open", "connect"]  # open first (establish), connect on close
+    closed = records[1]
+    assert closed.verdict == "allowed"
+    assert closed.matched_entry == f"127.0.0.1:{stub_server}"
+    assert closed.bytes_up == len(inner_request)  # post-establishment bytes only
+    assert closed.bytes_down == len(STUB_RESPONSE)
+    # the pair correlates on the shared connection_id
+    assert opened.connection_id == closed.connection_id
+
+
+async def test_open_record_append_failure_does_not_break_tunnel_or_leak_slot(
+    stub_server: int,
+) -> None:
+    """Issue #24 resilience (mirrors the stage-18 slot-leak regression): if the
+    sink RAISES on the real-time `open` append, the tunnel must STILL relay bytes
+    and the connection slot must STILL be released — a failing open append is
+    surfaced to stderr, never propagated or allowed to wedge the cap."""
+
+    appended: list[EgressAuditRecord] = []
+
+    class _OpenRaisingSink:
+        def append(self, record: EgressAuditRecord) -> None:
+            if record.action == "open":
+                raise OSError("audit volume full on the open append")
+            appended.append(record)
+
+    proxy = EgressProxy(
+        allowlist=[f"127.0.0.1:{stub_server}"],
+        agent=AGENT,
+        sink=_OpenRaisingSink(),
+        host="127.0.0.1",
+        port=0,
+        max_connections=2,
+    )
+    await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
+        writer.write(f"CONNECT 127.0.0.1:{stub_server} HTTP/1.1\r\n\r\n".encode())
+        await writer.drain()
+        established = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10)
+        assert b"200 Connection Established" in established  # tunnel established despite raise
+        inner_request = b"GET / HTTP/1.1\r\nHost: stub\r\n\r\n"
+        writer.write(inner_request)
+        await writer.drain()
+        tunneled = await asyncio.wait_for(reader.read(), timeout=10)
+        assert tunneled == STUB_RESPONSE  # bytes still relayed — open failure did not break it
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+        await asyncio.sleep(0.1)  # let the _handle finally chain run
+        assert proxy._active == 0  # slot released despite the open append raising
+        # the on-close `connect` record still landed (only the open append raised)
+        assert [r.action for r in appended] == ["connect"]
+        assert appended[0].bytes_down == len(STUB_RESPONSE)
+    finally:
+        await proxy.close()
 
 
 async def test_connect_denied_before_tunnel(make_proxy: MakeProxy) -> None:
     proxy, sink_path = await make_proxy(["api.anthropic.com:443"])
     response = await _roundtrip(proxy.bound_port, b"CONNECT evil.example.net:443 HTTP/1.1\r\n\r\n")
     assert response.startswith(b"HTTP/1.1 403")  # rejected BEFORE any tunnel exists
+    # A DENIED CONNECT is refused before establishment — NO `open` record, just
+    # the single denied `connect` record (issue #24 additivity).
+    await asyncio.sleep(0.1)  # give any (erroneous) extra record time to land
     (record,) = await _wait_records(sink_path, 1)
+    assert record.action == "connect"
     assert record.verdict == "denied"
     assert record.target == "evil.example.net:443"
     assert record.matched_entry is None
+    assert _records(sink_path) == [record]  # exactly one, no open record
 
 
 async def test_empty_allowlist_denies_everything(make_proxy: MakeProxy, stub_server: int) -> None:
