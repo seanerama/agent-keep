@@ -1,0 +1,32 @@
+# Agent Keep — GCP provisioner example vars. COPY to terraform.tfvars and edit.
+#   cp terraform.tfvars.example terraform.tfvars
+# terraform.tfvars is gitignored (real values never committed); THIS .example is.
+# No secrets belong here — ssh_public_key is a PUBLIC key, the rest is not secret.
+# Auth is Application Default Credentials (`gcloud auth application-default
+# login`) — NOT set here.
+
+# Your EXISTING SSH PUBLIC key — key material OR a path to a .pub file.
+# PUBLIC key only, NEVER a private key.
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...you@host  # your PUBLIC key"
+# ...or a path:
+# ssh_public_key = "~/.ssh/id_ed25519.pub"
+
+# REQUIRED — the CIDR allowed to reach SSH. Set to YOUR public IP as a /32.
+# NEVER 0.0.0.0/0 (that exposes SSH to the whole internet — the module rejects it).
+allowed_ssh_cidr = "203.0.113.4/32  # YOUR public IP /32"
+
+# GCE machine type — x86_64/amd64 only (ADR 0009 — NOT a t2a/arm type). Default e2-small.
+instance_size = "e2-small"
+
+# GCP region. Default us-central1.
+region = "us-central1"
+
+# GCP zone within the region. Default us-central1-a.
+zone = "us-central1-a"
+
+# GCP project id. Defaults to agent-keep-kn6r6i (dedicated project, billing-linked,
+# Compute Engine API enabled).
+project = "agent-keep-kn6r6i"
+
+# Name applied to all resources (instance, firewall, network tag).
+name = "agent-keep"
