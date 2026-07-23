@@ -27,7 +27,7 @@
 #                          specs/<slug>.yaml). It is shipped read-only to the host
 #                          for BOTH the proxy's allowlist mount AND the mechanic's
 #                          bundle copy. For the live worker set
-#                          KEEP_SPEC_FILE=specs/default-chatbot.live.yaml.
+#                          KEEP_SPEC_FILE=specs/default-chatbot.anthropic.yaml.
 #
 # Optional:
 #   BIND_HOST   interface both dev-http surfaces publish on (default 127.0.0.1 =
