@@ -63,8 +63,10 @@ resource "aws_security_group" "host" {
   name        = "${var.name}-sg"
   description = "Agent Keep conformant host: SSH from operator CIDR only, egress open."
 
+  # NOTE: AWS restricts SG description to ^[0-9A-Za-z_ .:/()#,@[]+=&;{}!$*-]* —
+  # no apostrophe (an apostrophe fails apply, not validate; issue #45).
   ingress {
-    description = "SSH from the operator's allowed CIDR only"
+    description = "SSH from the allowed operator CIDR only"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
