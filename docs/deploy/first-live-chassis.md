@@ -39,38 +39,41 @@ Therefore the first live chassis is deployed in **two steps**:
 Both steps use the same slug (`default-chatbot`), the same unit, the same ports.
 Step B just swaps the worker image for one that actually calls the model.
 
-## 1. Preflight (once per host, and after any change to the helper/unit)
+## 1. Bootstrap the host (once per host — any fresh Ubuntu+Docker box → deploy-ready)
 
 Values come from `.verity/deploy-access.md` (gitignored, shared out-of-band —
 ADR 0004 keeps access locations out of git). For the NSAF dev server the ssh
 target and its tailnet address live in that file; the host is reachable only on
 the tailnet.
 
-```sh
-export DEPLOY_HOST=<ssh-target>      # from .verity/deploy-access.md
-
-# You must be on the tailnet:
-ssh "$DEPLOY_HOST" 'docker info >/dev/null && echo docker-ok'
-
-# One-time bootstrap of the scoped root helper + sudoers (re-run whenever
-# deploy/agent-keep-deploy or deploy/sudoers-agent-keep changes in-repo):
-scp deploy/agent-keep-deploy deploy/sudoers-agent-keep "$DEPLOY_HOST":/tmp/
-ssh -t "$DEPLOY_HOST" 'sudo install -o root -g root -m 0755 /tmp/agent-keep-deploy \
-    /usr/local/sbin/agent-keep-deploy && sudo install -o root -g root -m 0440 \
-    /tmp/sudoers-agent-keep /etc/sudoers.d/agent-keep && sudo visudo -c'
-# Then edit /etc/sudoers.d/agent-keep: replace <deploy-user> with `smahoney`
-# (the login that runs deploy.sh), and re-run `sudo visudo -c`.
-```
-
-## 2. GHCR login on the host (so `docker pull` can fetch the images)
-
-The three images are on ghcr under `seanerama`. On the host:
+One command takes ANY fresh host (local, a VM you provisioned, or one a client
+handed you in their tenant) to deploy-ready — it installs Docker if absent,
+installs the scoped root helper + sudoers (substituting `<deploy-user>` to the
+ssh login for you — no hand-edit), and runs a conformance check (ADR 0007):
 
 ```sh
-# Uses a GitHub PAT with read:packages. Locations per .verity/deploy-access.md;
-# NEVER paste the token into git or this file.
-ssh "$DEPLOY_HOST" 'echo "$GHCR_PAT" | docker login ghcr.io -u seanerama --password-stdin'
+export DEPLOY_HOST=<ssh-target>      # from .verity/deploy-access.md; be on the tailnet
+
+# Re-run whenever deploy/agent-keep-deploy or deploy/sudoers-agent-keep changes
+# in-repo (idempotent — skips the docker install when it is already present).
+scripts/bootstrap-host.sh "$DEPLOY_HOST"
 ```
+
+The privileged install/visudo steps run over `ssh -t` and prompt for the HOST
+password interactively — expected for a fresh host (the post-bootstrap helper is
+NOPASSWD; the bootstrap itself is not). Installing Docker needs the host to have
+outbound internet (the official `get.docker.com` convenience script). On a fresh
+Docker install the script adds you to the `docker` group — reconnect your ssh
+session before deploying so `docker info` works without sudo. On success it
+prints `HOST READY`; deploy.sh's pre-flight will now pass.
+
+## 2. Images are public — no GHCR login needed
+
+The three images under `ghcr.io/seanerama` are **public**, so `docker pull`
+fetches them with no authentication. There is no login step: bootstrap in §1 is
+all the host needs before `deploy.sh`. (If you later publish to a PRIVATE
+registry, add a `docker login` on the host then — for the shipped public images
+it is unnecessary.)
 
 ## 3. Step A — deploy the static image (prove the pipe + DENY)
 
