@@ -8,20 +8,26 @@ counts on close.
 """
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 import pytest
 
-from keep_egress.proxy import EgressProxy
+from keep_egress.proxy import (
+    DEFAULT_HEAD_TIMEOUT_SECONDS,
+    DEFAULT_MAX_CONNECTIONS,
+    FALLBACK_BIND_HOST,
+    EgressProxy,
+)
 from keep_egress.records import EgressAuditRecord, EgressJsonlSink, ObservedAgent
 
 AGENT = ObservedAgent(slug="proxy-under-test", spec_version="0.0.1")
 
 STUB_RESPONSE = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
 
-MakeProxy = Callable[[list[str]], Awaitable[tuple[EgressProxy, Path]]]
+MakeProxy = Callable[..., Awaitable[tuple[EgressProxy, Path]]]
 
 
 @pytest.fixture
@@ -52,14 +58,22 @@ async def stub_server() -> AsyncIterator[int]:
 async def make_proxy(tmp_path: Path) -> AsyncIterator[MakeProxy]:
     started: list[EgressProxy] = []
 
-    async def _make(allowlist: list[str]) -> tuple[EgressProxy, Path]:
+    async def _make(
+        allowlist: list[str],
+        *,
+        host: str = "127.0.0.1",
+        head_timeout: float = DEFAULT_HEAD_TIMEOUT_SECONDS,
+        max_connections: int = DEFAULT_MAX_CONNECTIONS,
+    ) -> tuple[EgressProxy, Path]:
         sink_path = tmp_path / f"egress-audit-{len(started)}.jsonl"
         proxy = EgressProxy(
             allowlist=allowlist,
             agent=AGENT,
             sink=EgressJsonlSink(sink_path),
-            host="127.0.0.1",
+            host=host,
             port=0,
+            head_timeout=head_timeout,
+            max_connections=max_connections,
         )
         await proxy.start()
         started.append(proxy)
@@ -216,6 +230,153 @@ async def test_client_hangup_without_request_is_audited_denied(make_proxy: MakeP
     (record,) = await _wait_records(sink_path, 1)
     assert record.verdict == "denied"
     assert record.target == "invalid"
+
+
+# ---- issue #11 ingress hardening: head-read timeout, connection cap, bind ----
+
+
+async def test_slow_client_head_read_times_out_and_is_audited_denied(
+    make_proxy: MakeProxy,
+) -> None:
+    """A client that connects and sends NOTHING (or a partial head) is dropped
+    when the head-read timeout fires — the proxy does not wedge on the task
+    forever. It is refused (400) and audited as a denied `invalid` attempt,
+    exactly like any other incomplete head."""
+    proxy, sink_path = await make_proxy(["127.0.0.1"], head_timeout=0.3)
+    reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
+    writer.write(b"CONNECT 127.0")  # partial head, then stay silent (slowloris)
+    await writer.drain()
+    # The read completes because the PROXY closes us out after its head timeout —
+    # bounded well under this wait_for, proving no indefinite hang.
+    data = await asyncio.wait_for(reader.read(), timeout=5)
+    assert data.startswith(b"HTTP/1.1 400")
+    writer.close()
+    (record,) = await _wait_records(sink_path, 1)
+    assert record.verdict == "denied"
+    assert record.target == "invalid"
+
+
+async def test_head_timeout_does_not_wedge_the_proxy(
+    make_proxy: MakeProxy, stub_server: int
+) -> None:
+    """A slow client that times out must not block the event loop: a normal
+    request served immediately afterward still succeeds + audits unchanged."""
+    proxy, sink_path = await make_proxy(["127.0.0.1"], head_timeout=0.3)
+    # Occupy a connection that will time out (send nothing).
+    _r, slow_writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
+    # ...and immediately serve a real request on a second connection.
+    response = await _roundtrip(
+        proxy.bound_port,
+        f"GET http://127.0.0.1:{stub_server}/ HTTP/1.1\r\nHost: x\r\n\r\n".encode(),
+    )
+    assert b"200 OK" in response and response.endswith(b"hello")
+    slow_writer.close()
+    with contextlib.suppress(Exception):
+        await slow_writer.wait_closed()
+    # Both attempts are audited: the real allow + the timed-out denial.
+    records = await _wait_records(sink_path, 2)
+    verdicts = sorted(r.verdict for r in records)
+    assert verdicts == ["allowed", "denied"]
+
+
+async def test_connection_cap_sheds_excess_connections_promptly(
+    make_proxy: MakeProxy,
+) -> None:
+    """Beyond the cap the proxy sheds excess connections PROMPTLY (503, closed)
+    rather than queueing unbounded or wedging. Two slow clients hold the only
+    two slots (blocked in the head read); the third is shed at once — well
+    before the head timeout would ever fire."""
+    proxy, _sink_path = await make_proxy(["127.0.0.1"], head_timeout=10, max_connections=2)
+    held: list[asyncio.StreamWriter] = []
+    for _ in range(2):
+        _r, w = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
+        held.append(w)
+    await asyncio.sleep(0.1)  # let both _handle tasks acquire their slots
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
+    # Promptly (<< the 10s head timeout) shed with a 503, then EOF.
+    data = await asyncio.wait_for(reader.read(), timeout=2)
+    assert data.startswith(b"HTTP/1.1 503"), data
+    writer.close()
+
+    # The proxy is not wedged: freeing a slot lets a new connection be served.
+    held[0].close()
+    with contextlib.suppress(Exception):
+        await held[0].wait_closed()
+    for w in held[1:]:
+        w.close()
+        with contextlib.suppress(Exception):
+            await w.wait_closed()
+
+
+async def test_audit_sink_failure_does_not_leak_a_connection_slot(tmp_path: Path) -> None:
+    """Issue #11 review regression: if the audit sink raises on append (e.g. the
+    audit volume is full), the connection-slot counter must STILL be released.
+    Otherwise every completed connection leaks a slot and the proxy wedges at the
+    cap PERMANENTLY — even after the sink recovers — until restart. Drive more
+    than `max_connections` sequential connections whose audit append always
+    raises; with the leak, connections past the cap would be shed (503); fixed,
+    all are served (400 for garbage) and the live slot count returns to zero."""
+
+    class _RaisingSink:
+        def append(self, record: EgressAuditRecord) -> None:  # noqa: ARG002 - stub
+            raise OSError("audit volume full")
+
+    proxy = EgressProxy(
+        allowlist=["127.0.0.1"],
+        agent=AGENT,
+        sink=_RaisingSink(),
+        host="127.0.0.1",
+        port=0,
+        max_connections=2,
+    )
+    await proxy.start()
+    try:
+        # cap is 2; drive 4 SEQUENTIAL connections that each produce a record
+        # (garbage → denied 'invalid' → sink.append raises). A leaked slot would
+        # start shedding (503) by the 3rd; the fix keeps every one served.
+        for _ in range(4):
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
+            writer.write(b"GARBAGE NOT A REQUEST\r\n\r\n")
+            await writer.drain()
+            data = await asyncio.wait_for(reader.read(), timeout=2)
+            assert data.startswith(b"HTTP/1.1 400"), data  # served, never shed (503)
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        await asyncio.sleep(0.05)  # let the last _handle finally chain run
+        assert proxy._active == 0  # slot released despite every append raising
+    finally:
+        await proxy.close()
+
+
+async def test_bind_host_is_not_all_interfaces(make_proxy: MakeProxy) -> None:
+    """Issue #11: the listener binds a specific interface (127.0.0.1 here), not
+    0.0.0.0 — so a dual-homed proxy does not listen on every network."""
+    proxy, _sink = await make_proxy(["127.0.0.1"], host="127.0.0.1")
+    assert proxy.bound_host == "127.0.0.1"
+    assert proxy.bound_host != "0.0.0.0"
+
+
+async def test_unresolvable_bind_host_falls_back_so_the_proxy_still_boots(
+    tmp_path: Path,
+) -> None:
+    """Robustness: if the configured bind host cannot be resolved (local dev /
+    non-docker, where the internal-net alias does not exist), start() falls back
+    to all interfaces so the proxy still boots — the deploy's alias always
+    resolves, so this fallback never fires in production."""
+    proxy = EgressProxy(
+        allowlist=["127.0.0.1"],
+        agent=AGENT,
+        sink=EgressJsonlSink(tmp_path / "fallback-audit.jsonl"),
+        host="egress-proxy.invalid-nonexistent-host.test",
+        port=0,
+    )
+    try:
+        await proxy.start()
+        assert proxy.bound_host in (FALLBACK_BIND_HOST, "0.0.0.0", "::")
+    finally:
+        await proxy.close()
 
 
 async def test_allowed_but_unreachable_target_is_502_and_audited_allowed(

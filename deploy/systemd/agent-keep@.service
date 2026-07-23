@@ -32,9 +32,13 @@
 #     exactly like the Stage-3 test). Mounts the SAME spec.yaml the worker was
 #     baked from, read-only at /etc/agent-keep/spec.yaml (KEEP_SPEC_PATH) — the
 #     allowlist source of truth. Publishes NO host port (reachable ONLY on -net).
-#     Listens 0.0.0.0 within its namespace: ACCEPTABLE — both its networks are
-#     single-tenant (proxy + forwarder + trio, no foreign tenant) and no host
-#     port is published. Set KEEP_EGRESS_HOST to pin it tighter if ever desired.
+#     Binds the INTERNAL-net interface ONLY (issue #11): KEEP_EGRESS_HOST is
+#     pinned to `egress-proxy` — its own -net alias, which docker embedded DNS
+#     resolves to its internal-net IP ONLY (never the -egress leg), so the
+#     control port listens on -net alone and is unreachable from any container
+#     co-resident on -egress. The worker still reaches it at egress-proxy:3128.
+#     KEEP_EGRESS_HEAD_TIMEOUT_SECONDS / KEEP_EGRESS_MAX_CONNECTIONS bound
+#     slowloris / half-open floods (defense-in-depth; empty -> default, issue #13).
 #   mechanic                  -> -net ONLY (alias `mechanic`). Mounts the worker
 #     bundle READ-ONLY at /srv/worker-bundle (MECHANIC_WORKER_DIR — Stage-4).
 #     Publishes NO host port.
@@ -106,8 +110,10 @@ ExecStartPre=/usr/bin/docker pull ${MECHANIC_IMAGE_REF}
 ExecStartPre=/usr/bin/docker run -d --name agent-keep-%i-proxy \
     --network agent-keep-%i-net --network-alias egress-proxy \
     --add-host=host.docker.internal:host-gateway \
-    -e KEEP_EGRESS_HOST \
+    -e KEEP_EGRESS_HOST=egress-proxy \
     -e KEEP_EGRESS_PORT \
+    -e KEEP_EGRESS_HEAD_TIMEOUT_SECONDS \
+    -e KEEP_EGRESS_MAX_CONNECTIONS \
     --security-opt no-new-privileges \
     --cap-drop ALL \
     --read-only \

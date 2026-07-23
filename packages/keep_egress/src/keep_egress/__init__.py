@@ -57,10 +57,18 @@ contract, per egress-observation v1).
 
 Runtime configuration (all env, read by `keep_egress.runner`):
 
-    KEEP_SPEC_PATH          mounted spec.yaml     default /etc/agent-keep/spec.yaml
-    KEEP_EGRESS_AUDIT_PATH  proxy-own audit file  default /var/lib/agent-keep/egress-audit.jsonl
-    KEEP_EGRESS_HOST        bind address          default 0.0.0.0
-    KEEP_EGRESS_PORT        bind port             default 3128
+    KEEP_SPEC_PATH  (default /etc/agent-keep/spec.yaml) — mounted spec.yaml
+    KEEP_EGRESS_AUDIT_PATH  (default /var/lib/agent-keep/egress-audit.jsonl) — proxy-own audit
+    KEEP_EGRESS_HOST  (default egress-proxy) — bind address
+    KEEP_EGRESS_PORT  (default 3128) — bind port
+    KEEP_EGRESS_HEAD_TIMEOUT_SECONDS  (default 10) — request-head read timeout
+    KEEP_EGRESS_MAX_CONNECTIONS  (default 256) — max concurrent client connections
+
+KEEP_EGRESS_HOST defaults to the proxy's internal-net alias, so the control port
+binds the internal interface ONLY (reachable only from the paired worker, issue
+#11); it falls back to all interfaces if the alias is unresolvable (local dev).
+The head timeout (slowloris / half-open guard) and connection cap (excess shed
+promptly) are ingress robustness only — enforcement + audit semantics unchanged.
 
 The audit path is the PROXY's own file, separate from the worker's
 `audit.jsonl` — same append-only plane, no write collision.

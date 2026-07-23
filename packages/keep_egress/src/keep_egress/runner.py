@@ -7,10 +7,20 @@ allowlist, no permissive mode, and deliberately no kill-switch: a spec with an
 empty `sandbox.egress` yields deny-everything, which is the safe default.
 
 Env configuration (defaults in parentheses):
-  KEEP_SPEC_PATH          (/etc/agent-keep/spec.yaml)
-  KEEP_EGRESS_AUDIT_PATH  (/var/lib/agent-keep/egress-audit.jsonl)
-  KEEP_EGRESS_HOST        (0.0.0.0)
-  KEEP_EGRESS_PORT        (3128)
+  KEEP_SPEC_PATH                     (/etc/agent-keep/spec.yaml)
+  KEEP_EGRESS_AUDIT_PATH             (/var/lib/agent-keep/egress-audit.jsonl)
+  KEEP_EGRESS_HOST                   (egress-proxy)
+  KEEP_EGRESS_PORT                   (3128)
+  KEEP_EGRESS_HEAD_TIMEOUT_SECONDS   (10)
+  KEEP_EGRESS_MAX_CONNECTIONS        (256)
+
+KEEP_EGRESS_HOST defaults to the proxy's INTERNAL-net alias (`egress-proxy`), not
+`0.0.0.0` (issue #11): docker embedded DNS resolves that alias to the proxy's
+internal-net IP ONLY, so a dual-homed proxy binds its control port on the
+internal interface alone — reachable ONLY from the paired worker
+(contract egress-observation §Exposes), never from a co-resident container on the
+egress net. Outside docker the alias does not resolve; `EgressProxy.start` then
+falls back to all interfaces so the proxy still boots (see its docstring).
 """
 
 import asyncio
@@ -20,13 +30,19 @@ from typing import NamedTuple
 
 from pydantic import ValidationError
 
-from keep_egress.proxy import EgressProxy
+from keep_egress.proxy import (
+    DEFAULT_HEAD_TIMEOUT_SECONDS,
+    DEFAULT_MAX_CONNECTIONS,
+    EgressProxy,
+)
 from keep_egress.records import EgressJsonlSink, ObservedAgent
 from keep_spec import load_spec
 
 DEFAULT_SPEC_PATH = "/etc/agent-keep/spec.yaml"
 DEFAULT_AUDIT_PATH = "/var/lib/agent-keep/egress-audit.jsonl"
-DEFAULT_HOST = "0.0.0.0"
+#: The proxy's internal-net alias — binds the internal interface only (issue #11);
+#: see the module docstring. NOT 0.0.0.0.
+DEFAULT_HOST = "egress-proxy"
 DEFAULT_PORT = 3128
 
 
@@ -35,6 +51,8 @@ class _Config(NamedTuple):
     audit_path: str
     host: str
     port: int
+    head_timeout_seconds: float
+    max_connections: int
 
 
 def _env_or_default(key: str, default: str) -> str:
@@ -60,6 +78,12 @@ def _resolve_config() -> _Config:
         audit_path=_env_or_default("KEEP_EGRESS_AUDIT_PATH", DEFAULT_AUDIT_PATH),
         host=_env_or_default("KEEP_EGRESS_HOST", DEFAULT_HOST),
         port=int(_env_or_default("KEEP_EGRESS_PORT", str(DEFAULT_PORT))),
+        head_timeout_seconds=float(
+            _env_or_default("KEEP_EGRESS_HEAD_TIMEOUT_SECONDS", str(DEFAULT_HEAD_TIMEOUT_SECONDS))
+        ),
+        max_connections=int(
+            _env_or_default("KEEP_EGRESS_MAX_CONNECTIONS", str(DEFAULT_MAX_CONNECTIONS))
+        ),
     )
 
 
@@ -69,7 +93,7 @@ async def _serve(proxy: EgressProxy) -> None:
 
 
 def main() -> int:
-    spec_path, audit_path, host, port = _resolve_config()
+    spec_path, audit_path, host, port, head_timeout_seconds, max_connections = _resolve_config()
 
     try:
         spec = load_spec(spec_path)
@@ -87,10 +111,13 @@ def main() -> int:
         sink=EgressJsonlSink(audit_path),
         host=host,
         port=port,
+        head_timeout=head_timeout_seconds,
+        max_connections=max_connections,
     )
     print(
         f"egress proxy: observing agent '{spec.metadata.slug}' "
-        f"(specVersion {spec.metadata.specVersion}) on {host}:{port}; "
+        f"(specVersion {spec.metadata.specVersion}) on {host}:{port} "
+        f"(head-timeout {head_timeout_seconds}s, max-connections {max_connections}); "
         f"allowlist entries: {len(allowlist)}"
         + (" (EMPTY — denying everything, fail-closed)" if not allowlist else ""),
         flush=True,

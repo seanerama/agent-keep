@@ -216,8 +216,11 @@ echo "==> write digest-pinned env (helper backs up the previous)"
 # OPENAI_API_KEY, GOOGLE_API_KEY — or none for a local provider) are injected
 # below the § secrets step from KEEP_DEPLOY_SECRETS stdin, BEFORE the worker
 # starts, and land here on the host (root:0600) via the helper's append-env.
-# KEEP_EGRESS_HOST/PORT are written empty so the unit's `-e VAR` pass-through
-# hands the container nothing (runner defaults apply) unless the operator sets them.
+# The KEEP_EGRESS_* tunables are written empty so the unit's `-e VAR` pass-through
+# hands the container nothing and the runner defaults apply (empty => default,
+# issue #13) unless the operator sets them. KEEP_EGRESS_HOST is the exception: the
+# unit PINS it to `egress-proxy` literally (bind the internal interface only,
+# issue #11), so the blank value here is informational, not consulted.
 printf '%s\n' \
   "# written by deploy.sh — digest-pinned deploy vars, do not hand-edit" \
   "# (provider secret VALUES are appended below this block by deploy.sh's secrets step)" \
@@ -232,6 +235,8 @@ printf '%s\n' \
   "SQLITE_PATH=${SQLITE_PATH}" \
   "KEEP_EGRESS_HOST=" \
   "KEEP_EGRESS_PORT=" \
+  "KEEP_EGRESS_HEAD_TIMEOUT_SECONDS=" \
+  "KEEP_EGRESS_MAX_CONNECTIONS=" \
   | ssh "$HOST" "sudo -n $HELPER write-env ${SLUG}"
 
 # § secrets: inject provider secret VALUE(s) into the env file BEFORE the worker

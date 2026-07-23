@@ -393,6 +393,39 @@ def test_no_direct_route_out(agent_container: str) -> None:
     assert "ROUTE-EXISTS" not in result.stdout
 
 
+def test_proxy_binds_internal_interface_not_all(proxy_container: str) -> None:
+    """(issue #11) The proxy binds the INTERNAL-net interface ONLY, not 0.0.0.0:
+    KEEP_EGRESS_HOST defaults to the proxy's own internal-net alias
+    (`egress-proxy`), which docker embedded DNS resolves to its internal-net IP
+    alone — even though the proxy is dual-homed onto the egress net. So the
+    control port listens on the internal interface and is NOT reachable from a
+    co-resident container on the egress net, matching contract egress-observation
+    §Exposes ('reachable ONLY from the paired agent'). Proven from INSIDE the
+    container by reading its listening sockets."""
+    result = _exec_py(
+        proxy_container,
+        "import socket, struct\n"
+        f"want = socket.gethostbyname('{PROXY_ALIAS}')\n"
+        "def ip(h):\n"
+        "    return socket.inet_ntoa(struct.pack('<I', int(h, 16)))\n"
+        "listen = []\n"
+        "with open('/proc/net/tcp') as f:\n"
+        "    next(f)\n"
+        "    for line in f:\n"
+        "        p = line.split()\n"
+        "        addr_hex, port_hex = p[1].split(':')\n"
+        f"        if int(port_hex, 16) == {PROXY_PORT} and p[3] == '0A':\n"
+        "            listen.append(ip(addr_hex))\n"
+        "print('WANT', want)\n"
+        "print('LISTEN', listen)\n"
+        "assert '0.0.0.0' not in listen, ('bound on all interfaces', listen)\n"
+        "assert listen == [want], ('not bound to internal-net IP only', want, listen)\n"
+        "print('BIND-OK')\n",
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "BIND-OK" in result.stdout, result.stdout
+
+
 def test_proxy_audit_is_the_proxys_own_file(agent_container: str, proxy_container: str) -> None:
     """The proxy's audit file is its OWN append-only plane — the worker's
     audit.jsonl inside the agent container is a different file on a different

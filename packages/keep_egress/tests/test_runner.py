@@ -46,6 +46,41 @@ def test_empty_host_resolves_to_default(monkeypatch: pytest.MonkeyPatch) -> None
     assert runner._resolve_config().host == runner.DEFAULT_HOST
 
 
+def test_default_host_binds_internal_interface_not_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #11: the bind default must NOT be 0.0.0.0 — it is the proxy's
+    internal-net alias, so the control port lands on the internal interface only.
+    """
+    monkeypatch.delenv("KEEP_EGRESS_HOST", raising=False)
+    assert runner.DEFAULT_HOST == "egress-proxy"
+    assert runner.DEFAULT_HOST != "0.0.0.0"
+    assert runner._resolve_config().host == "egress-proxy"
+
+
+# ---- issue #11 ingress hardening: head-read timeout + connection cap tunables ----
+
+
+def test_empty_head_timeout_and_max_connections_resolve_to_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same present-but-empty hazard on the new tunables: empty -> default, not a
+    crash (float('')/int('') would raise) — issue #13 discipline."""
+    monkeypatch.setenv("KEEP_EGRESS_HEAD_TIMEOUT_SECONDS", "")
+    monkeypatch.setenv("KEEP_EGRESS_MAX_CONNECTIONS", "")
+    config = runner._resolve_config()
+    assert config.head_timeout_seconds == runner.DEFAULT_HEAD_TIMEOUT_SECONDS == 10.0
+    assert config.max_connections == runner.DEFAULT_MAX_CONNECTIONS == 256
+
+
+def test_explicit_head_timeout_and_max_connections_are_honored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KEEP_EGRESS_HEAD_TIMEOUT_SECONDS", "2.5")
+    monkeypatch.setenv("KEEP_EGRESS_MAX_CONNECTIONS", "8")
+    config = runner._resolve_config()
+    assert config.head_timeout_seconds == 2.5
+    assert config.max_connections == 8
+
+
 def test_empty_spec_and_audit_paths_resolve_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """Same env-passthrough hazard on the path vars: empty -> default, not ''."""
     monkeypatch.setenv("KEEP_SPEC_PATH", "")
@@ -62,6 +97,8 @@ def test_unset_env_resolves_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None
         "KEEP_EGRESS_HOST",
         "KEEP_SPEC_PATH",
         "KEEP_EGRESS_AUDIT_PATH",
+        "KEEP_EGRESS_HEAD_TIMEOUT_SECONDS",
+        "KEEP_EGRESS_MAX_CONNECTIONS",
     ):
         monkeypatch.delenv(key, raising=False)
     config = runner._resolve_config()
@@ -70,6 +107,8 @@ def test_unset_env_resolves_to_defaults(monkeypatch: pytest.MonkeyPatch) -> None
         audit_path=runner.DEFAULT_AUDIT_PATH,
         host=runner.DEFAULT_HOST,
         port=runner.DEFAULT_PORT,
+        head_timeout_seconds=runner.DEFAULT_HEAD_TIMEOUT_SECONDS,
+        max_connections=runner.DEFAULT_MAX_CONNECTIONS,
     )
 
 
@@ -79,10 +118,14 @@ def test_explicit_values_are_honored(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KEEP_EGRESS_HOST", "127.0.0.1")
     monkeypatch.setenv("KEEP_SPEC_PATH", "/custom/spec.yaml")
     monkeypatch.setenv("KEEP_EGRESS_AUDIT_PATH", "/custom/audit.jsonl")
+    monkeypatch.setenv("KEEP_EGRESS_HEAD_TIMEOUT_SECONDS", "3")
+    monkeypatch.setenv("KEEP_EGRESS_MAX_CONNECTIONS", "16")
     config = runner._resolve_config()
     assert config == runner._Config(
         spec_path="/custom/spec.yaml",
         audit_path="/custom/audit.jsonl",
         host="127.0.0.1",
         port=9999,
+        head_timeout_seconds=3.0,
+        max_connections=16,
     )
