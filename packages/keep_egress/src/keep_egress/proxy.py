@@ -18,6 +18,8 @@ docstring for the frozen field names.
 import asyncio
 import contextlib
 import re
+import socket
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -36,6 +38,21 @@ MAX_HEAD_BYTES = 64 * 1024
 #: Relay chunk size.
 CHUNK_BYTES = 64 * 1024
 
+#: Ingress robustness defaults (issue #11 — defense-in-depth, tunable via env in
+#: runner.py; enforcement + audit semantics are UNCHANGED by these).
+#: Head-read timeout: a client that does not complete the request head (a slow-
+#: loris / half-open attempt) within this many seconds is dropped and audited as
+#: a malformed attempt rather than holding a task forever.
+DEFAULT_HEAD_TIMEOUT_SECONDS = 10.0
+#: Connection cap: the max concurrent CLIENT connections the proxy will service;
+#: excess connections are shed promptly (see `_handle`), never queued unbounded.
+DEFAULT_MAX_CONNECTIONS = 256
+#: Where `start()` falls back if the configured bind host cannot be resolved or
+#: bound (e.g. local dev / non-docker, where the internal-net alias does not
+#: exist) — so the proxy always boots. In the deploy the internal-net alias
+#: always resolves, so the fallback never fires there.
+FALLBACK_BIND_HOST = "0.0.0.0"  # noqa: S104 — documented last-resort boot fallback
+
 #: CONNECT authority-form target: host:port, port REQUIRED (RFC 7231 §4.3.6).
 #: Bracketed IPv6 literals are outside the sandbox.egress grammar
 #: (keep_spec.models.EGRESS_HOST) and are treated as malformed — refused and
@@ -45,6 +62,9 @@ _CONNECT_AUTHORITY = re.compile(r"^(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*):(?P<port>
 _RESPONSE_400 = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 _RESPONSE_403 = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 _RESPONSE_502 = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+_RESPONSE_503 = (
+    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+)
 _RESPONSE_200_ESTABLISHED = b"HTTP/1.1 200 Connection Established\r\n\r\n"
 
 #: HTTP method token (RFC 9110 tchar subset — practically, methods are
@@ -166,18 +186,57 @@ class EgressProxy:
         sink: EgressAuditSink,
         host: str = "127.0.0.1",
         port: int = 0,
+        head_timeout: float = DEFAULT_HEAD_TIMEOUT_SECONDS,
+        max_connections: int = DEFAULT_MAX_CONNECTIONS,
     ) -> None:
         self._allowlist = list(allowlist)
         self._agent = agent
         self._sink = sink
         self._host = host
         self._port = port
+        self._head_timeout = head_timeout
+        self._max_connections = max_connections
+        #: Live count of accepted CLIENT connections currently being serviced;
+        #: bounded by `_max_connections` (single-threaded asyncio, so the
+        #: check-then-increment in `_handle` needs no lock — no await between).
+        self._active = 0
         self._server: asyncio.Server | None = None
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(
-            self._handle, self._host, self._port, limit=MAX_HEAD_BYTES
-        )
+        """Bind the listener. Preferred bind is the INTERNAL-net interface only
+        (issue #11): `host` defaults to the proxy's internal-net alias
+        (`egress-proxy`), which docker embedded DNS resolves to the proxy's
+        internal-net IP ONLY — even when the proxy is dual-homed onto the egress
+        net — so the control port listens on the internal interface and is NOT
+        reachable from a co-resident container on the egress net. The worker
+        still reaches it at `egress-proxy:3128`. If the configured host cannot be
+        resolved/bound here (local dev / non-docker), fall back to all interfaces
+        so the proxy always boots; the deploy's alias always resolves, so the
+        fallback never fires in production.
+        """
+        try:
+            self._server = await asyncio.start_server(
+                self._handle, self._host, self._port, limit=MAX_HEAD_BYTES
+            )
+        except (OSError, socket.gaierror) as exc:
+            if self._host == FALLBACK_BIND_HOST:
+                raise
+            print(
+                f"egress proxy: bind host {self._host!r} unavailable ({exc}); "
+                f"falling back to {FALLBACK_BIND_HOST}",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._host = FALLBACK_BIND_HOST
+            self._server = await asyncio.start_server(
+                self._handle, self._host, self._port, limit=MAX_HEAD_BYTES
+            )
+
+    @property
+    def bound_host(self) -> str:
+        assert self._server is not None, "proxy not started"
+        socket_host: str = self._server.sockets[0].getsockname()[0]
+        return socket_host
 
     @property
     def bound_port(self) -> int:
@@ -198,6 +257,22 @@ class EgressProxy:
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """One client connection = one audited attempt, no exceptions: the
         record is appended in the finally path of the connection's lifetime."""
+        if self._active >= self._max_connections:
+            # Connection cap reached (issue #11 defense-in-depth): shed this
+            # excess connection PROMPTLY (503 then close) rather than queueing it
+            # or wedging a task. This is load-shedding, NOT an enforcement
+            # decision — an over-cap client never reached the allowlist path, so
+            # it is deliberately NOT one of the audited per-attempt records; the
+            # one-record-per-accepted-attempt semantics are unchanged. Tunable
+            # via KEEP_EGRESS_MAX_CONNECTIONS (DEFAULT_MAX_CONNECTIONS).
+            await self._respond(writer, _RESPONSE_503)
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
+        # check-then-increment is atomic here: single-threaded asyncio, no await
+        # between the cap check above and this increment.
+        self._active += 1
         record: EgressAuditRecord | None = None
         try:
             record = await self._proxy_connection(reader, writer)
@@ -213,6 +288,7 @@ class EgressProxy:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+            self._active -= 1
 
     async def _proxy_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -260,8 +336,19 @@ class EgressProxy:
 
     async def _read_request(self, reader: asyncio.StreamReader) -> _ParsedRequest | None:
         try:
-            head = await reader.readuntil(b"\r\n\r\n")
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
+            # Bound the request-head read (issue #11): a slow/half-open client
+            # that never completes the head is dropped instead of holding the
+            # task forever. A timeout is treated exactly like any other
+            # incomplete/malformed head — None here → refused (400) + audited as
+            # a denied `invalid` attempt by the existing path. Tunable via
+            # KEEP_EGRESS_HEAD_TIMEOUT_SECONDS (DEFAULT_HEAD_TIMEOUT_SECONDS).
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), self._head_timeout)
+        except (
+            asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
+            ConnectionError,
+            TimeoutError,
+        ):
             return None
         return _parse_request_head(head)
 
