@@ -85,7 +85,14 @@ ExecStartPre=-/usr/bin/docker rm -f agent-keep-%i-mechanic
 ExecStartPre=-/usr/bin/docker rm -f agent-keep-%i-ingress
 ExecStartPre=-/usr/bin/docker rm -f agent-keep-%i
 # Pull the pinned refs once (helper pinned them to digests in the env file).
-ExecStartPre=/usr/bin/docker pull ${WORKER_IMAGE_REF}
+# The WORKER pull is best-effort (`-`): in ADR 0007 local-image mode WORKER_IMAGE_REF
+# is a LOADED image's immutable ID (sha256:...), which is already present on the
+# host and is NOT pullable from any registry — the pull would fail, so we ignore
+# it and let the run use the loaded image. In registry-pull mode the ref is a
+# normal image@digest and this refreshes it exactly as before; a genuinely missing
+# image still fails loudly at the worker `docker run` below. The proxy + mechanic
+# are always registry-published, so their pulls stay mandatory.
+ExecStartPre=-/usr/bin/docker pull ${WORKER_IMAGE_REF}
 ExecStartPre=/usr/bin/docker pull ${PROXY_IMAGE_REF}
 ExecStartPre=/usr/bin/docker pull ${MECHANIC_IMAGE_REF}
 # The egress-proxy: internal alias + dual-homed egress leg, spec mounted
