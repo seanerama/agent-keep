@@ -11,7 +11,12 @@ knowledge of the proxy beyond its proxy env vars (contract egress-observation
 v1, wire rules).
 
 One `egress` audit record per accepted client connection — allowed and denied
-alike — appended on close with the relayed byte counts. See the package
+alike — appended on close with the relayed byte counts. Additionally (issue #24,
+real-time observability), an allowed CONNECT tunnel emits a second, EARLIER
+record with `action: open` the moment the tunnel is established (the allow
+decision + matched entry, before any bytes flow); it shares a `connection_id`
+with the on-close `connect` record so the pair correlates. Denied and
+absolute-form HTTP attempts still emit exactly one record. See the package
 docstring for the frozen field names.
 """
 
@@ -23,6 +28,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from keep_egress.records import (
     INVALID_TARGET,
@@ -288,15 +294,9 @@ class EgressProxy:
                     # A failing audit sink (e.g. the audit volume is full) must
                     # NOT skip the connection-slot release in the OUTER finally
                     # below (issue #11 review): surface it to stderr, never let it
-                    # leak a slot and wedge the cap.
-                    try:
-                        self._sink.append(record)
-                    except Exception as exc:
-                        print(
-                            f"egress proxy: audit sink append failed: {exc!r}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                    # leak a slot and wedge the cap. Same resilience the real-time
+                    # `open` append relies on (issue #24) — one helper, one rule.
+                    self._safe_append(record)
                 writer.close()
                 with contextlib.suppress(Exception):
                     await writer.wait_closed()
@@ -309,12 +309,18 @@ class EgressProxy:
     async def _proxy_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> EgressAuditRecord:
+        # One connection_id per accepted client connection — the correlation
+        # seam (issue #24). On the allowed CONNECT path it pairs the real-time
+        # `open` record with the eventual on-close `connect` record; every other
+        # (single-record) path just carries its own unique one.
+        connection_id = str(uuid4())
+
         request = await self._read_request(reader)
         if request is None:
             # Malformed (or empty) request: refused + audited as denied with
             # the safe target representation.
             await self._respond(writer, _RESPONSE_400)
-            return self._record(INVALID_TARGET, "denied", None)
+            return self._record(INVALID_TARGET, "denied", None, connection_id=connection_id)
 
         matched = match_allowlist(self._allowlist, request.host, request.port)
         if matched is None:
@@ -322,7 +328,7 @@ class EgressProxy:
             # (403; CONNECT is rejected before tunnel establishment), never a
             # silent drop.
             await self._respond(writer, _RESPONSE_403)
-            return self._record(request.target, "denied", None)
+            return self._record(request.target, "denied", None, connection_id=connection_id)
 
         try:
             upstream_reader, upstream_writer = await asyncio.open_connection(
@@ -331,13 +337,28 @@ class EgressProxy:
         except OSError:
             # The allowlist allowed the ATTEMPT; the target was unreachable.
             await self._respond(writer, _RESPONSE_502)
-            return self._record(request.target, "allowed", matched)
+            return self._record(request.target, "allowed", matched, connection_id=connection_id)
 
         counter = _ByteCounter()
         try:
             if request.kind == "connect":
                 writer.write(_RESPONSE_200_ESTABLISHED)
                 await writer.drain()
+                # Real-time `open` record at CONNECT establish (issue #24): the
+                # allow decision + matched entry, BEFORE any bytes flow, so a live
+                # audit shows in-flight allowed tunnels instead of waiting for the
+                # pooled connection to close. Shares connection_id with the on-close
+                # `connect` record. Resilient append — a sink failure must not break
+                # the tunnel or leak a connection slot (same rule as the close append).
+                self._safe_append(
+                    self._record(
+                        request.target,
+                        "allowed",
+                        matched,
+                        action="open",
+                        connection_id=connection_id,
+                    )
+                )
             else:
                 head = request.rewritten_head()
                 upstream_writer.write(head)
@@ -348,7 +369,9 @@ class EgressProxy:
             upstream_writer.close()
             with contextlib.suppress(Exception):
                 await upstream_writer.wait_closed()
-        return self._record(request.target, "allowed", matched, counter)
+        return self._record(
+            request.target, "allowed", matched, counter, connection_id=connection_id
+        )
 
     async def _read_request(self, reader: asyncio.StreamReader) -> _ParsedRequest | None:
         try:
@@ -413,20 +436,46 @@ class EgressProxy:
             writer.write(response)
             await writer.drain()
 
+    def _safe_append(self, record: EgressAuditRecord) -> None:
+        """Append to the audit sink, surfacing a sink failure to stderr WITHOUT
+        letting it propagate. A failing append (e.g. the audit volume is full)
+        must never break a tunnel, propagate out of the connection task, or wedge
+        the connection cap (issue #11 review + issue #24 real-time `open` append) —
+        one helper, one rule, used for BOTH the on-close record (in `_handle`) and
+        the real-time `open` record (in `_proxy_connection`)."""
+        try:
+            self._sink.append(record)
+        except Exception as exc:
+            print(
+                f"egress proxy: audit sink append failed: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+
     def _record(
         self,
         target: str,
         verdict: str,
         matched_entry: str | None,
         counter: _ByteCounter | None = None,
+        *,
+        action: str = "connect",
+        connection_id: str | None = None,
     ) -> EgressAuditRecord:
         assert verdict in ("allowed", "denied")
+        assert action in ("connect", "open")
+        # connection_id threads the open<->close pairing (issue #24); when a
+        # caller supplies none, the model's default_factory mints a fresh unique
+        # one (single-record paths).
+        extra = {} if connection_id is None else {"connection_id": connection_id}
         return EgressAuditRecord(
             agent=self._agent,
+            action="open" if action == "open" else "connect",
             target=target,
             verdict="allowed" if verdict == "allowed" else "denied",
             matched_entry=matched_entry,
             bytes_up=counter.up if counter else 0,
             bytes_down=counter.down if counter else 0,
             run_id=None,  # v1 proxy is not run-aware ("when attributable")
+            **extra,
         )
