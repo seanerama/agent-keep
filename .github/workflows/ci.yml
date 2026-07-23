@@ -89,14 +89,19 @@ jobs:
           sudo install -m 0755 "${RUNNER_TEMP}/tf-bin/terraform" /usr/local/bin/terraform
           terraform version
           test "$(terraform version | head -1 | awk '{print $2}')" = "v${TF_VERSION}"
-      - name: Terraform fmt + validate (provision/aws)
+      - name: Terraform fmt + validate (provision/*)
         # Credential-free: fmt is static; init -backend=false + validate resolve
-        # the pinned AWS provider schema without contacting AWS. NO plan/apply
-        # (that creates billable resources — the operator runs the live test).
+        # each module's pinned provider schema without contacting the cloud. NO
+        # plan/apply (that creates billable resources — the operator runs the live
+        # test). Loops over every provisioner module (provision/aws, provision/gcp,
+        # and any future cloud) so a new module is covered automatically.
         run: |
-          terraform -chdir=provision/aws fmt -check -recursive
-          terraform -chdir=provision/aws init -backend=false -input=false
-          terraform -chdir=provision/aws validate
+          for mod in provision/*/; do
+            echo "=== ${mod} ==="
+            terraform -chdir="${mod}" fmt -check -recursive
+            terraform -chdir="${mod}" init -backend=false -input=false
+            terraform -chdir="${mod}" validate
+          done
   typecheck:
     runs-on: ubuntu-latest
     steps:
