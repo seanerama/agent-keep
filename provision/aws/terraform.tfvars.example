@@ -1,0 +1,23 @@
+# Agent Keep — AWS provisioner example vars. COPY to terraform.tfvars and edit.
+#   cp terraform.tfvars.example terraform.tfvars
+# terraform.tfvars is gitignored (real values never committed); THIS .example is.
+# No secrets belong here — ssh_public_key is a PUBLIC key, the rest is not secret.
+
+# Your EXISTING SSH PUBLIC key — key material OR a path to a .pub file.
+# PUBLIC key only, NEVER a private key.
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...you@host  # your PUBLIC key"
+# ...or a path:
+# ssh_public_key = "~/.ssh/id_ed25519.pub"
+
+# REQUIRED — the CIDR allowed to reach SSH. Set to YOUR public IP as a /32.
+# NEVER 0.0.0.0/0 (that exposes SSH to the whole internet — the module rejects it).
+allowed_ssh_cidr = "203.0.113.4/32  # YOUR public IP /32"
+
+# EC2 instance type — x86_64/amd64 only (ADR 0009). Default t3.small.
+instance_size = "t3.small"
+
+# AWS region. Default us-east-1.
+region = "us-east-1"
+
+# Name tag applied to all resources (instance, security group, key pair).
+name = "agent-keep"

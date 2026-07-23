@@ -74,6 +74,29 @@ jobs:
         # deploy.sh + the scoped root helper + the Stages 2-4 smoke scripts the
         # verify step runs. Uses the pinned 0.11.0 installed above (== local).
         run: shellcheck deploy.sh deploy/agent-keep-deploy scripts/*.sh
+      - name: Install pinned Terraform (1.9.8)
+        # Stage-20/issue #21: the provision/aws Terraform module is CI-validated
+        # (fmt + validate; no plan/apply — no AWS creds in CI). Pin the version
+        # deterministically by downloading the fixed 1.9.8 release binary, same
+        # discipline as the pinned ShellCheck above; scripts/lint.sh runs the SAME
+        # checks locally when terraform is installed.
+        run: |
+          TF_VERSION="1.9.8"
+          curl -fsSL \
+            "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" \
+            -o "${RUNNER_TEMP}/terraform.zip"
+          unzip -o "${RUNNER_TEMP}/terraform.zip" -d "${RUNNER_TEMP}/tf-bin"
+          sudo install -m 0755 "${RUNNER_TEMP}/tf-bin/terraform" /usr/local/bin/terraform
+          terraform version
+          test "$(terraform version | head -1 | awk '{print $2}')" = "v${TF_VERSION}"
+      - name: Terraform fmt + validate (provision/aws)
+        # Credential-free: fmt is static; init -backend=false + validate resolve
+        # the pinned AWS provider schema without contacting AWS. NO plan/apply
+        # (that creates billable resources — the operator runs the live test).
+        run: |
+          terraform -chdir=provision/aws fmt -check -recursive
+          terraform -chdir=provision/aws init -backend=false -input=false
+          terraform -chdir=provision/aws validate
   typecheck:
     runs-on: ubuntu-latest
     steps:

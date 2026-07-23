@@ -57,6 +57,21 @@ run_check "ruff check"        uv run ruff check .
 run_check "ruff format check" uv run ruff format --check .
 run_check "shellcheck"        shellcheck deploy.sh deploy/agent-keep-deploy scripts/*.sh
 
+# Terraform (stage 20 / ADR 0009): fmt-check + validate the provision/aws module.
+# CI's lint job installs a pinned terraform (1.9.8) and ALWAYS runs these; locally
+# we run them only when terraform is on PATH, and SKIP (don't fail) otherwise so a
+# dev without terraform installed isn't blocked. `init -backend=false` + validate
+# need no AWS creds, so this never touches (or bills) real AWS.
+if command -v terraform >/dev/null 2>&1; then
+  run_check "terraform fmt"      terraform -chdir=provision/aws fmt -check -recursive
+  run_check "terraform init"     terraform -chdir=provision/aws init -backend=false -input=false
+  run_check "terraform validate" terraform -chdir=provision/aws validate
+else
+  echo "=== terraform ==="
+  echo "SKIP: terraform not on PATH; install 1.9.8 to run fmt-check + validate locally (CI always runs them)."
+  echo
+fi
+
 if [ "${#failed[@]}" -ne 0 ]; then
   echo "LINT: FAIL (${#failed[@]} check(s) failed: ${failed[*]})"
   exit 1
