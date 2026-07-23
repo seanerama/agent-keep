@@ -265,21 +265,31 @@ def _proxy_audit_records(proxy_name: str) -> list[dict[str, object]]:
 
 
 def _wait_audit_record(
-    proxy_name: str, target: str, verdict: str, timeout: float = 15.0
+    proxy_name: str,
+    target: str,
+    verdict: str,
+    timeout: float = 15.0,
+    action: str | None = None,
 ) -> dict[str, object]:
-    """Newest matching record; records append on connection CLOSE, so poll."""
+    """Newest matching record; the on-close `connect` record appends on
+    connection CLOSE, so poll. `action` optionally narrows to `connect`/`open`
+    (issue #24: an allowed CONNECT now yields BOTH an `open` and a `connect`
+    record for the same target+verdict)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         matches = [
             record
             for record in _proxy_audit_records(proxy_name)
-            if record["target"] == target and record["verdict"] == verdict
+            if record["target"] == target
+            and record["verdict"] == verdict
+            and (action is None or record["action"] == action)
         ]
         if matches:
             return matches[-1]
         time.sleep(0.3)
     raise AssertionError(
-        f"no egress audit record target={target!r} verdict={verdict!r} in:\n"
+        f"no egress audit record target={target!r} verdict={verdict!r} "
+        f"action={action!r} in:\n"
         + "\n".join(json.dumps(r) for r in _proxy_audit_records(proxy_name))
     )
 
@@ -368,10 +378,108 @@ def test_connect_tunnel_allowed_and_denied(
     assert result.returncode == 0, result.stderr
     assert "TUNNEL-OK" in result.stdout, result.stdout
 
-    allowed = _wait_audit_record(proxy_container, f"{STUB_ALIAS}:{STUB_PORT}", "allowed")
+    # The on-close `connect` record carries the final bytes (an allowed CONNECT
+    # now ALSO emits an earlier `open` record — narrow to `connect` for bytes).
+    allowed = _wait_audit_record(
+        proxy_container, f"{STUB_ALIAS}:{STUB_PORT}", "allowed", action="connect"
+    )
     assert int(str(allowed["bytes_down"])) > 0
     denied = _wait_audit_record(proxy_container, f"{DENIED_HOST}:443", "denied")
     assert denied["matched_entry"] is None
+    assert denied["action"] == "connect"  # denied refused before establish — no `open`
+
+
+def test_connect_open_record_is_realtime_before_close(
+    agent_container: str, proxy_container: str, stub_container: str
+) -> None:
+    """(issue #24 — THE point) An allowed CONNECT tunnel emits an `action: open`
+    record IN REAL TIME at establish — readable from the proxy audit while the
+    tunnel is still open, BEFORE the on-close `connect` record exists. Then on
+    close the `connect` record with final bytes appears, sharing connection_id.
+
+    Proven with a held-open tunnel: from inside the agent, establish CONNECT,
+    push bytes, then HOLD the socket (sleep) without closing. While it is held,
+    the proxy audit already shows the `open` record (bytes 0) and NO `connect`
+    record for that connection (the pooled/held connection defers the close
+    record — the exact bug this stage fixes). On close, the `connect` record
+    lands with the same connection_id and non-zero bytes."""
+    hold_seconds = 6
+    script = (
+        "import socket, time\n"
+        f"s = socket.create_connection(('{PROXY_ALIAS}', {PROXY_PORT}), timeout=10)\n"
+        f"s.sendall(b'CONNECT {STUB_ALIAS}:{STUB_PORT} HTTP/1.1\\r\\n\\r\\n')\n"
+        "est = s.recv(1024)\n"
+        "assert b'200 Connection Established' in est, est\n"
+        f"s.sendall(b'GET / HTTP/1.0\\r\\nHost: {STUB_ALIAS}\\r\\n\\r\\n')\n"
+        "data = s.recv(65536)\n"
+        "assert data.startswith(b'HTTP/1.0 200'), data[:64]\n"
+        "print('TUNNEL-HELD', flush=True)\n"
+        f"time.sleep({hold_seconds})\n"
+        "s.close()\n"
+        "print('TUNNEL-CLOSED', flush=True)\n"
+    )
+    proc = subprocess.Popen(
+        ["docker", "exec", agent_container, "python3", "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    target = f"{STUB_ALIAS}:{STUB_PORT}"
+    try:
+        # Wait for the in-agent tunnel to be established + held open.
+        assert proc.stdout is not None
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if "TUNNEL-HELD" in line:
+                break
+            if proc.poll() is not None:
+                raise AssertionError(f"holder exited early: {proc.communicate()}")
+        else:
+            raise AssertionError("tunnel never reported HELD")
+
+        # REAL TIME: the `open` record is already readable while the tunnel is
+        # still open — the whole point of the fix.
+        opened = _wait_audit_record(proxy_container, target, "allowed", action="open")
+        validated_open = EgressAuditRecord.model_validate(opened)
+        assert validated_open.action == "open"
+        assert validated_open.matched_entry == target
+        assert validated_open.bytes_up == 0 and validated_open.bytes_down == 0
+        cid = validated_open.connection_id
+
+        # ...and the on-close `connect` record does NOT exist yet (deferred until
+        # this held connection closes — eventually-consistent WITHOUT the open
+        # record, which is exactly why issue #24 needs the real-time `open`).
+        connects_now = [
+            r
+            for r in _proxy_audit_records(proxy_container)
+            if r["target"] == target and r["action"] == "connect" and r["connection_id"] == cid
+        ]
+        assert connects_now == [], f"close record leaked before close: {connects_now}"
+    finally:
+        proc.wait(timeout=30)
+
+    # On close, the `connect` record with final bytes lands, same connection_id.
+    # Poll for THIS connection's close record specifically (the session-scoped
+    # audit log holds other tests' connect records too).
+    deadline = time.monotonic() + 15
+    closed = None
+    while time.monotonic() < deadline:
+        matches = [
+            r
+            for r in _proxy_audit_records(proxy_container)
+            if r["action"] == "connect" and r["connection_id"] == cid
+        ]
+        if matches:
+            closed = matches[-1]
+            break
+        time.sleep(0.3)
+    assert closed is not None, f"no close record for connection_id={cid}"
+    validated_close = EgressAuditRecord.model_validate(closed)
+    assert validated_close.target == target
+    assert validated_close.verdict == "allowed"
+    assert validated_close.connection_id == cid  # correlates the open+close pair
+    assert validated_close.bytes_up > 0 and validated_close.bytes_down > 0
 
 
 def test_no_direct_route_out(agent_container: str) -> None:
