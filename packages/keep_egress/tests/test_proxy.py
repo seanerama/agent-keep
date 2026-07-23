@@ -309,6 +309,47 @@ async def test_connection_cap_sheds_excess_connections_promptly(
             await w.wait_closed()
 
 
+async def test_audit_sink_failure_does_not_leak_a_connection_slot(tmp_path: Path) -> None:
+    """Issue #11 review regression: if the audit sink raises on append (e.g. the
+    audit volume is full), the connection-slot counter must STILL be released.
+    Otherwise every completed connection leaks a slot and the proxy wedges at the
+    cap PERMANENTLY — even after the sink recovers — until restart. Drive more
+    than `max_connections` sequential connections whose audit append always
+    raises; with the leak, connections past the cap would be shed (503); fixed,
+    all are served (400 for garbage) and the live slot count returns to zero."""
+
+    class _RaisingSink:
+        def append(self, record: EgressAuditRecord) -> None:  # noqa: ARG002 - stub
+            raise OSError("audit volume full")
+
+    proxy = EgressProxy(
+        allowlist=["127.0.0.1"],
+        agent=AGENT,
+        sink=_RaisingSink(),
+        host="127.0.0.1",
+        port=0,
+        max_connections=2,
+    )
+    await proxy.start()
+    try:
+        # cap is 2; drive 4 SEQUENTIAL connections that each produce a record
+        # (garbage → denied 'invalid' → sink.append raises). A leaked slot would
+        # start shedding (503) by the 3rd; the fix keeps every one served.
+        for _ in range(4):
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
+            writer.write(b"GARBAGE NOT A REQUEST\r\n\r\n")
+            await writer.drain()
+            data = await asyncio.wait_for(reader.read(), timeout=2)
+            assert data.startswith(b"HTTP/1.1 400"), data  # served, never shed (503)
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        await asyncio.sleep(0.05)  # let the last _handle finally chain run
+        assert proxy._active == 0  # slot released despite every append raising
+    finally:
+        await proxy.close()
+
+
 async def test_bind_host_is_not_all_interfaces(make_proxy: MakeProxy) -> None:
     """Issue #11: the listener binds a specific interface (127.0.0.1 here), not
     0.0.0.0 — so a dual-homed proxy does not listen on every network."""

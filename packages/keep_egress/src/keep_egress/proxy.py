@@ -273,21 +273,37 @@ class EgressProxy:
         # check-then-increment is atomic here: single-threaded asyncio, no await
         # between the cap check above and this increment.
         self._active += 1
-        record: EgressAuditRecord | None = None
         try:
-            record = await self._proxy_connection(reader, writer)
-        except Exception:
-            # An unexpected relay failure must still leave an audit trail —
-            # fail-closed applies to observation as much as to enforcement.
-            if record is None:
-                record = self._record(INVALID_TARGET, "denied", None)
-            raise
+            record: EgressAuditRecord | None = None
+            try:
+                record = await self._proxy_connection(reader, writer)
+            except Exception:
+                # An unexpected relay failure must still leave an audit trail —
+                # fail-closed applies to observation as much as to enforcement.
+                if record is None:
+                    record = self._record(INVALID_TARGET, "denied", None)
+                raise
+            finally:
+                if record is not None:
+                    # A failing audit sink (e.g. the audit volume is full) must
+                    # NOT skip the connection-slot release in the OUTER finally
+                    # below (issue #11 review): surface it to stderr, never let it
+                    # leak a slot and wedge the cap.
+                    try:
+                        self._sink.append(record)
+                    except Exception as exc:
+                        print(
+                            f"egress proxy: audit sink append failed: {exc!r}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
         finally:
-            if record is not None:
-                self._sink.append(record)
-            writer.close()
-            with contextlib.suppress(Exception):
-                await writer.wait_closed()
+            # ALWAYS release the connection slot, independent of the audit append
+            # / writer close above — a sink failure must never wedge the proxy at
+            # the connection cap permanently (issue #11 review).
             self._active -= 1
 
     async def _proxy_connection(
