@@ -91,7 +91,13 @@ def test_deliver_builds_saves_loads_and_pins_a_runnable_id(clean_image: object) 
 def test_deliver_rejects_a_missing_spec() -> None:
     """Guard: a bad spec path fails clearly (exit 66), never a silent empty id."""
     result = subprocess.run(
-        ["bash", str(DELIVER), str(REPO_ROOT / "specs" / "does-not-exist.yaml"), ARBITRARY_REF, "-"],
+        [
+            "bash",
+            str(DELIVER),
+            str(REPO_ROOT / "specs" / "does-not-exist.yaml"),
+            ARBITRARY_REF,
+            "-",
+        ],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),

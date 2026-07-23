@@ -114,7 +114,7 @@ def _write_stub_bin(dir_path: Path) -> tuple[Path, Path, Path]:
     # keep-build: record the build, do nothing else (no real docker build).
     keepbuild = dir_path / "keep-build"
     keepbuild.write_text(
-        "#!/usr/bin/env bash\n" f'printf "%s\\n" "$*" >> "{keepbuild_log}"\n' "exit 0\n",
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{keepbuild_log}"\nexit 0\n',
         encoding="utf-8",
     )
 
@@ -123,7 +123,9 @@ def _write_stub_bin(dir_path: Path) -> tuple[Path, Path, Path]:
     return ssh_log, env_capture, keepbuild_log
 
 
-def _run_deploy(bin_dir: Path, *, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run_deploy(
+    bin_dir: Path, *, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["DEPLOY_HOST"] = "stub@stub-host"
@@ -160,9 +162,9 @@ def test_local_mode_builds_and_loads_the_worker_without_pulling_it(tmp_path: Pat
     assert _verbs(keepbuild_log), "keep-build was never invoked in local-image mode"
     assert any("docker load" in c for c in verbs), verbs
     # (b) NO `docker pull` of the worker image ran.
-    assert not any(
-        "docker pull" in c and "agent-keep-default-chatbot" in c for c in verbs
-    ), f"worker was pulled in local-image mode: {verbs}"
+    assert not any("docker pull" in c and "agent-keep-default-chatbot" in c for c in verbs), (
+        f"worker was pulled in local-image mode: {verbs}"
+    )
 
 
 def test_local_mode_pins_worker_by_id_not_repodigests(tmp_path: Path) -> None:
@@ -179,9 +181,7 @@ def test_local_mode_pins_worker_by_id_not_repodigests(tmp_path: Path) -> None:
     # the worker pin used .Id, never RepoDigests.
     verbs = _verbs(ssh_log)
     assert any(".Id" in c for c in verbs), verbs
-    assert not any(
-        "RepoDigests" in c and "agent-keep-default-chatbot" in c for c in verbs
-    ), verbs
+    assert not any("RepoDigests" in c and "agent-keep-default-chatbot" in c for c in verbs), verbs
 
 
 def test_local_mode_still_pulls_proxy_and_mechanic(tmp_path: Path) -> None:
