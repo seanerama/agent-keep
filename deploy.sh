@@ -28,6 +28,16 @@
 #                          for BOTH the proxy's allowlist mount AND the mechanic's
 #                          bundle copy. For the live worker set
 #                          KEEP_SPEC_FILE=specs/default-chatbot.anthropic.yaml.
+#   KEEP_WORKER_LOCAL_IMAGE=1  LOCAL-IMAGE MODE (ADR 0007 arbitrary-blueprint
+#                          path): deploy ANY blueprint WITHOUT a registry write.
+#                          Instead of pulling the worker tag from ghcr, BUILD the
+#                          worker image locally from KEEP_SPEC_FILE and stream it
+#                          to the host (docker save | ssh docker load — no file, no
+#                          registry), then pin the LOADED image by its immutable ID
+#                          (a loaded image has NO RepoDigests to pin). The proxy +
+#                          mechanic STILL pull their generic published :edge images
+#                          — only the WORKER changes SOURCE (load vs pull). Off by
+#                          default: the registry-pull path below is unchanged.
 #
 # Optional:
 #   BIND_HOST   interface both dev-http surfaces publish on (default 127.0.0.1 =
@@ -115,6 +125,11 @@ MECHANIC_IMG="ghcr.io/${OWNER}/agent-keep-mechanic"
 PROXY_VERSION="${KEEP_PROXY_VERSION:-edge}"
 MECHANIC_VERSION="${KEEP_MECHANIC_VERSION:-edge}"
 
+# Local-image mode (ADR 0007 arbitrary-blueprint path): build the worker locally
+# and load it to the host instead of pulling it from a registry. Opt-in, off by
+# default so the CI-published pull path stays UNCHANGED. See the header.
+WORKER_LOCAL_IMAGE="${KEEP_WORKER_LOCAL_IMAGE:-}"
+
 # The spec.yaml the worker image was baked from — shipped read-only to the host
 # for the proxy's allowlist mount AND the mechanic's bundle copy.
 SPEC_FILE="${KEEP_SPEC_FILE:-specs/${SLUG}.yaml}"
@@ -172,9 +187,26 @@ pin() {
   # pin <image> <tag> -> prints the RepoDigest (image@sha256:...) resolved on the host.
   ssh "$HOST" "docker pull -q '$1:$2' >/dev/null && docker inspect --format '{{index .RepoDigests 0}}' '$1:$2'"
 }
-WORKER_REF="$(pin "$WORKER_IMG" "$VERSION")"
+# The proxy + mechanic are GENERIC, registry-published images (:edge): they always
+# pull+pin by RepoDigest, in BOTH modes. Only the WORKER's SOURCE varies.
 PROXY_REF="$(pin "$PROXY_IMG" "$PROXY_VERSION")"
 MECHANIC_REF="$(pin "$MECHANIC_IMG" "$MECHANIC_VERSION")"
+if [ "$WORKER_LOCAL_IMAGE" = "1" ]; then
+  # LOCAL-IMAGE MODE (ADR 0007): build the worker from the spec locally, stream it
+  # to the host (docker save | ssh docker load — no registry write), and pin the
+  # LOADED image by its immutable ID. scripts/deliver-worker-image.sh does the
+  # build+deliver+pin and prints ONLY the id (sha256:...) on stdout. NO worker
+  # `docker pull` runs — the whole point of the no-ghcr-write path.
+  echo "==> local-image mode: build worker from ${SPEC_FILE} and load it to ${HOST} (no registry)"
+  WORKER_REF="$(scripts/deliver-worker-image.sh "$SPEC_FILE" "${WORKER_IMG}:${VERSION}" "$HOST")"
+  if [ -z "$WORKER_REF" ]; then
+    echo "==> DEPLOY FAILED: local worker image build/deliver produced no image id." >&2
+    exit 1
+  fi
+else
+  # REGISTRY-PULL MODE (unchanged): pull the published worker tag, pin by RepoDigest.
+  WORKER_REF="$(pin "$WORKER_IMG" "$VERSION")"
+fi
 echo "    worker  -> ${WORKER_REF}"
 echo "    proxy   -> ${PROXY_REF}"
 echo "    mechanic-> ${MECHANIC_REF}"
