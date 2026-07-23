@@ -397,6 +397,7 @@ def _egress_entry_allows(entry: str, host: str, port: int) -> bool:
     if entry_port is not None and entry_port != port:
         return False
     entry_host = entry_host.lower()
+    host = host.lower()  # case-insensitive host match — parity with keep_spec.egress (issue #10)
     if entry_host.startswith("*."):
         return host.endswith(entry_host[1:])  # subdomains only, per wildcard convention
     return host == entry_host

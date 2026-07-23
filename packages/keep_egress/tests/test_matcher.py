@@ -55,10 +55,11 @@ def test_parity_with_build_time_cross_validation(
     entry: str, host: str, port: int, expected: bool
 ) -> None:
     """The runtime matcher and the transplanted build-time matcher agree on
-    every case (wiring's matcher expects a pre-lowercased host, which is what
-    its callers pass — normalize the same way here)."""
-    assert wiring_allows(entry, host.lower(), port) is expected
-    assert wiring_allows(entry, host.lower(), port) is egress_entry_allows(entry, host, port)
+    every case for the RAW host input — both lowercase internally (issue #10).
+    No pre-normalization here: a regression where one stops lowercasing would
+    diverge on the uppercase-host cases and fail this test."""
+    assert wiring_allows(entry, host, port) is expected
+    assert wiring_allows(entry, host, port) is egress_entry_allows(entry, host, port)
 
 
 def test_every_case_entry_is_schema_valid() -> None:
