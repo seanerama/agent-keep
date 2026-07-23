@@ -101,6 +101,29 @@ if [ "${KEEP_DEPLOY_SECRETS:-}" = "1" ]; then
     printf '  %s\n' "printf 'ANTHROPIC_API_KEY=%s\\n' \"\$KEY\" | KEEP_DEPLOY_SECRETS=1 ./deploy.sh ${SLUG} ${VERSION}" >&2
     exit 64
   fi
+  # Per-line validation (stage 24, live finding F1): every non-empty line must
+  # be VAR=value — a valid env var name AND a non-empty value. An empty-valued
+  # or malformed line otherwise lands verbatim in the root:0600 host env file
+  # (append-env is a bare cat >>) and the worker crash-loops at boot. Fail fast
+  # HERE, before any build/ssh/remote action. NEVER echo the value or the raw
+  # line — the no-secrets-in-logs discipline (Stage 7) applies to error paths.
+  secret_line_no=0
+  while IFS= read -r secret_line; do
+    secret_line_no=$((secret_line_no + 1))
+    [ -n "$secret_line" ] || continue
+    if [[ "$secret_line" =~ ^[A-Za-z_][A-Za-z0-9_]*=.+$ ]]; then
+      continue
+    fi
+    if [[ "$secret_line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=$ ]]; then
+      printf '%s\n' "invalid secret line ${secret_line_no}: ${BASH_REMATCH[1]} has an EMPTY value" >&2
+    else
+      printf '%s\n' "invalid secret line ${secret_line_no}: malformed — expected VAR=value (valid env var name, non-empty value)" >&2
+    fi
+    printf '%s\n' "pipe VAR=value line(s), e.g." >&2
+    printf '  %s\n' "printf 'ANTHROPIC_API_KEY=%s\\n' \"\$KEY\" | KEEP_DEPLOY_SECRETS=1 ./deploy.sh ${SLUG} ${VERSION}" >&2
+    exit 64
+  done <<< "$DEPLOY_SECRETS"
+  unset secret_line secret_line_no
 fi
 
 # Slug validation MIRRORS the root helper's (deploy/agent-keep-deploy): strict

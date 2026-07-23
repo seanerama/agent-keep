@@ -82,6 +82,29 @@ if [ "${KEEP_DEPLOY_SECRETS:-}" = "1" ]; then
     printf '  %s\n' "printf 'ANTHROPIC_API_KEY=%s\\n' \"\$KEY\" | KEEP_DEPLOY_SECRETS=1 scripts/deploy-agent.sh ${BLUEPRINT} ${TARGET}" >&2
     exit 64
   fi
+  # Per-line validation (stage 24, live finding F1): every non-empty line must
+  # be VAR=value — a valid env var name AND a non-empty value. An empty-valued
+  # or malformed line otherwise ships to the host env file and the worker
+  # crash-loops at boot (opaque curl (52) minutes later). Fail fast HERE, before
+  # any build/ssh/remote action. NEVER echo the value or the raw line — the
+  # no-secrets-in-logs discipline (Stage 7) applies to error paths too.
+  secret_line_no=0
+  while IFS= read -r secret_line; do
+    secret_line_no=$((secret_line_no + 1))
+    [ -n "$secret_line" ] || continue
+    if [[ "$secret_line" =~ ^[A-Za-z_][A-Za-z0-9_]*=.+$ ]]; then
+      continue
+    fi
+    if [[ "$secret_line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=$ ]]; then
+      printf '%s\n' "invalid secret line ${secret_line_no}: ${BASH_REMATCH[1]} has an EMPTY value" >&2
+    else
+      printf '%s\n' "invalid secret line ${secret_line_no}: malformed — expected VAR=value (valid env var name, non-empty value)" >&2
+    fi
+    printf '%s\n' "pipe VAR=value line(s), e.g." >&2
+    printf '  %s\n' "printf 'ANTHROPIC_API_KEY=%s\\n' \"\$KEY\" | KEEP_DEPLOY_SECRETS=1 scripts/deploy-agent.sh ${BLUEPRINT} ${TARGET}" >&2
+    exit 64
+  done <<< "$DEPLOY_SECRETS"
+  unset secret_line secret_line_no
 fi
 
 # ── Pick a python that can import keep_spec (to read the blueprint's slug) ───────
