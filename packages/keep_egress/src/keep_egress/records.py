@@ -38,7 +38,15 @@ class EgressAuditRecord(BaseModel):
     egress-observation v1 contract ("Audit record kind: `egress` with
     `action: connect`"). Sits alongside agent_runtime.audit.AuditRecord in the
     same audit plane: shared envelope names (id/ts/agent/event/action), plus
-    the egress-specific fields the contract requires."""
+    the egress-specific fields the contract requires.
+
+    Two-phase for allowed CONNECT tunnels (issue #24, egress-observation
+    amendment 2026-07-22): the same model also carries the real-time `open`
+    record emitted at CONNECT establish (action `open`, zero bytes) and the
+    `connect` record on close (final bytes); the pair correlates by
+    `connection_id`. Both `action: open` and `connection_id` are ADDITIVE (a new
+    action value + a new field), mirroring audit-record's additive `trace_id` —
+    no existing field is removed or repurposed."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -46,7 +54,7 @@ class EgressAuditRecord(BaseModel):
     ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
     agent: ObservedAgent
     event: Literal["egress"] = "egress"
-    action: Literal["connect"] = "connect"
+    action: Literal["connect", "open"] = "connect"
     target: str = Field(
         description="host:port of the attempt; 'invalid' when unparseable "
         "(never raw request bytes, never URLs beyond host:port)."
@@ -62,6 +70,15 @@ class EgressAuditRecord(BaseModel):
         description="Run-correlation key when the attempt is attributable to a "
         "run (contract: 'when attributable'); the v1 proxy is not run-aware — "
         "null on every record today.",
+    )
+    connection_id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        description="Correlation seam pairing an open+close record of one CONNECT "
+        "tunnel: the `open` record (at establish) and the eventual `connect` record "
+        "(on close) share it. Single records (denied, allowed-HTTP) get their own "
+        "unique default. Additive field (egress-observation amendment 2026-07-22), "
+        "mirroring audit-record's additive `trace_id` — a new key, ignorable by "
+        "existing consumers; no existing field removed or repurposed.",
     )
 
 

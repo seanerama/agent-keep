@@ -20,6 +20,10 @@ from keep_egress.records import EgressAuditRecord, EgressJsonlSink, ObservedAgen
 AGENT = ObservedAgent(slug="default-chatbot", spec_version="0.1.0")
 
 #: THE frozen field roster (additive-only from the first green test).
+#: `connection_id` was ADDED additively (issue #24 / egress-observation amendment
+#: 2026-07-22) — the correlation seam pairing an allowed CONNECT's open+close
+#: records; the same additive path as audit-record's `trace_id`. Nothing was
+#: removed or renamed.
 FROZEN_TOP_LEVEL_FIELDS = {
     "id",
     "ts",
@@ -32,6 +36,7 @@ FROZEN_TOP_LEVEL_FIELDS = {
     "bytes_up",
     "bytes_down",
     "run_id",
+    "connection_id",
 }
 FROZEN_AGENT_FIELDS = {"slug", "spec_version"}
 
@@ -83,6 +88,37 @@ def test_denied_record_carries_null_matched_entry() -> None:
     record = _record(verdict="denied", matched_entry=None)
     assert record.verdict == "denied"
     assert record.matched_entry is None
+
+
+def test_open_action_validates_additively() -> None:
+    """Issue #24: `action: open` is the new additive value for the real-time
+    record emitted at CONNECT establish — it validates, alongside the existing
+    `connect`. A default record is still `connect` (nothing existing changed)."""
+    assert _record().action == "connect"  # default unchanged
+    opened = _record(action="open", bytes_up=0, bytes_down=0)
+    assert opened.action == "open"
+    assert opened.event == "egress"  # same record kind / plane
+
+
+def test_connection_id_defaults_to_a_unique_uuid() -> None:
+    """The additive `connection_id` field mints a fresh uuid per record when the
+    producer supplies none — so single (unpaired) records each get their own."""
+    a = _record()
+    b = _record()
+    UUID(a.connection_id)  # is a uuid
+    assert a.connection_id != b.connection_id  # unique per record by default
+
+
+def test_open_and_close_records_pair_by_shared_connection_id() -> None:
+    """A producer threads ONE connection_id through an allowed CONNECT's `open`
+    (at establish, zero bytes) and `connect` (on close, final bytes) records so
+    the pair correlates on the wire."""
+    cid = "11111111-2222-3333-4444-555555555555"
+    opened = _record(action="open", connection_id=cid, bytes_up=0, bytes_down=0)
+    closed = _record(action="connect", connection_id=cid, bytes_up=2459, bytes_down=6063)
+    assert opened.connection_id == closed.connection_id == cid
+    assert (opened.bytes_up, opened.bytes_down) == (0, 0)
+    assert (closed.bytes_up, closed.bytes_down) == (2459, 6063)
 
 
 def test_shape_is_strict() -> None:
