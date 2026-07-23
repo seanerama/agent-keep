@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Agent Keep — opt-in pre-push lint gate (issue #32). Runs the exact CI lint set
+# via scripts/lint.sh and BLOCKS the push if any check fails, so a red lint is
+# caught here instead of after a CI round-trip.
+#
+# This hook is committed under .githooks/ and is NOT active by default. Enable it
+# once, per clone, with a single command:
+#
+#   git config core.hooksPath .githooks
+#
+# git passes the remote name + URL as args and the ref list on stdin; this gate
+# is unconditional (it lints the working tree the same way CI does), so those are
+# intentionally ignored.
+set -euo pipefail
+
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${HOOK_DIR}/.." && pwd)"
+
+if ! "${REPO_ROOT}/scripts/lint.sh"; then
+  echo "pre-push: lint failed — push blocked. Fix the above, or bypass with 'git push --no-verify'." >&2
+  exit 1
+fi
