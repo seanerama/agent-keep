@@ -464,10 +464,8 @@ class EgressProxy:
     ) -> EgressAuditRecord:
         assert verdict in ("allowed", "denied")
         assert action in ("connect", "open")
-        # connection_id threads the open<->close pairing (issue #24); when a
-        # caller supplies none, the model's default_factory mints a fresh unique
-        # one (single-record paths).
-        extra = {} if connection_id is None else {"connection_id": connection_id}
+        # connection_id threads the open<->close pairing (issue #24); a
+        # single-record path passes none and gets a fresh unique one here.
         return EgressAuditRecord(
             agent=self._agent,
             action="open" if action == "open" else "connect",
@@ -477,5 +475,5 @@ class EgressProxy:
             bytes_up=counter.up if counter else 0,
             bytes_down=counter.down if counter else 0,
             run_id=None,  # v1 proxy is not run-aware ("when attributable")
-            **extra,
+            connection_id=connection_id if connection_id is not None else str(uuid4()),
         )
